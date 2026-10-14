@@ -29,11 +29,14 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use super::host_key::host_key_id;
+use super::known_hosts::HostKeyTrust;
 use super::session::{Command, run_session};
 use super::{
     AuthMethod, COMMAND_QUEUE, ConnectRequest, EVENT_DATA, EVENT_ERROR, EVENT_HOST_KEY,
     EVENT_STATUS, Notifier, TEST_TASK_TIMEOUT,
 };
+use crate::inventory::KnownKey;
+use crate::vault::{VaultHandle, VaultState, VaultStatus, test_support::TempVault};
 
 /// One event as the webview would receive it.
 type Event = (String, Value);
@@ -79,8 +82,22 @@ struct RunningSession {
 }
 
 impl RunningSession {
-    /// Starts a session with an in-memory known-hosts record the test controls.
-    fn start(request: ConnectRequest, known_hosts: HashMap<String, String>) -> Self {
+    /// Starts a session with an in-memory known-hosts record the test controls
+    /// and no vault behind it, the way a headless run has none.
+    fn start(request: ConnectRequest, known_hosts: HashMap<String, KnownKey>) -> Self {
+        Self::spawn(
+            request,
+            HostKeyTrust::new(Arc::new(StdMutex::new(known_hosts)), None),
+        )
+    }
+
+    /// Starts a session whose trust comes from a real vault, with nothing in
+    /// memory, so only the vault can answer.
+    fn start_with_vault(request: ConnectRequest, vault: VaultHandle) -> Self {
+        Self::spawn(request, HostKeyTrust::new(Arc::default(), Some(vault)))
+    }
+
+    fn spawn(request: ConnectRequest, trust: HostKeyTrust) -> Self {
         let events: Events = Arc::default();
         let sink = Arc::clone(&events);
         let notifier: Notifier = Arc::new(move |event, payload| {
@@ -99,7 +116,7 @@ impl RunningSession {
             request,
             commands_rx,
             decision_rx,
-            Arc::new(StdMutex::new(known_hosts)),
+            trust,
         ));
 
         Self {
@@ -257,7 +274,18 @@ async fn live_rejecting_the_host_key_stops_the_connection() {
         return;
     };
 
-    let mut session = RunningSession::start(password_request(&server, password), HashMap::new());
+    // A vault that is open, so a refusal storing anything would be visible
+    // afterwards: refusing has to leave no record behind.
+    let temp = TempVault::new();
+    let mut vault = temp.vault();
+    vault
+        .create("a-strong-master-password")
+        .expect("the vault was created");
+
+    let mut session = RunningSession::start_with_vault(
+        password_request(&server, password),
+        VaultState::new(vault).handle(),
+    );
     assert!(
         session
             .saw(|events| host_key_prompt(events).is_some())
@@ -276,6 +304,17 @@ async fn live_rejecting_the_host_key_stops_the_connection() {
         !status_reached(&log, "connected"),
         "a refused host key must never reach a shell: {log:?}"
     );
+
+    // Nothing was stored: a later connection, with nothing in memory, still has
+    // to ask, exactly as the first one did.
+    let mut reopened = temp.vault();
+    reopened
+        .unlock("a-strong-master-password")
+        .expect("the vault unlocked");
+    let stored = HostKeyTrust::new(Arc::default(), Some(VaultState::new(reopened).handle()))
+        .lookup(&host_key_id(&server.host, server.port))
+        .await;
+    assert_eq!(stored, None, "a refused host key must not be stored");
 }
 
 #[tokio::test]
@@ -290,11 +329,16 @@ async fn live_changed_host_key_is_blocked_without_asking() {
         return;
     };
 
-    // Pretend this host was approved earlier with a different key.
+    // Pretend this host was approved earlier with a different key. The recorded
+    // algorithm is the one the test servers use; against another server the
+    // mismatch simply reports the algorithm as well as the fingerprint.
     let mut known_hosts = HashMap::new();
     known_hosts.insert(
         host_key_id(&server.host, server.port),
-        "SHA256:notTheKeyThisServerUses".to_string(),
+        KnownKey {
+            algorithm: "ssh-ed25519".to_string(),
+            fingerprint: "SHA256:notTheKeyThisServerUses".to_string(),
+        },
     );
 
     let mut session = RunningSession::start(password_request(&server, password), known_hosts);
@@ -312,6 +356,102 @@ async fn live_changed_host_key_is_blocked_without_asking() {
     assert!(
         !status_reached(&log, "connected"),
         "a changed host key must never reach a shell: {log:?}"
+    );
+}
+
+/// The point of this phase, end to end against a real server: approve a key once
+/// with the vault open, then connect again without being asked, including after
+/// the vault was closed and opened again.
+#[tokio::test]
+#[ignore = "needs a real SSH server; see the module comment"]
+async fn live_an_approved_host_key_is_remembered_across_a_restart() {
+    const VAULT_PASSWORD: &str = "a-strong-master-password";
+
+    let Some(server) = LiveServer::from_env() else {
+        eprintln!("skipping: set TERMUST_LIVE_HOST and TERMUST_LIVE_USER to run the live tests");
+        return;
+    };
+    let Ok(password) = std::env::var("TERMUST_LIVE_PASSWORD") else {
+        eprintln!("skipping: TERMUST_LIVE_PASSWORD is not set");
+        return;
+    };
+
+    // A vault of this test's own, open, exactly as the app's is after unlocking.
+    let temp = TempVault::new();
+    let mut vault = temp.vault();
+    vault.create(VAULT_PASSWORD).expect("the vault was created");
+
+    let mut first = RunningSession::start_with_vault(
+        password_request(&server, password.clone()),
+        VaultState::new(vault).handle(),
+    );
+
+    assert!(
+        first.saw(|events| host_key_prompt(events).is_some()).await,
+        "no host key prompt arrived: {:?}",
+        first.log()
+    );
+    let prompt = host_key_prompt(&first.log())
+        .expect("the prompt was just found")
+        .clone();
+    assert_eq!(
+        prompt["persistent"].as_bool(),
+        Some(true),
+        "an open vault has to say the approval will be kept: {prompt:?}"
+    );
+    first.answer_host_key(true);
+    assert!(
+        first
+            .saw(|events| status_reached(events, "connected"))
+            .await,
+        "the first session never reached a shell: {:?}",
+        first.log()
+    );
+    let outcome = first.shutdown().await;
+    assert!(outcome.is_ok(), "the first session failed: {outcome:?}");
+
+    // A restart: the vault is closed and opened again, and the second session
+    // keeps nothing in memory, so only the stored record can answer.
+    let mut reopened = temp.vault();
+    assert_eq!(reopened.status().unwrap(), VaultStatus::Locked);
+    reopened.unlock(VAULT_PASSWORD).expect("the vault unlocked");
+
+    let mut second = RunningSession::start_with_vault(
+        password_request(&server, password),
+        VaultState::new(reopened).handle(),
+    );
+    assert!(
+        second
+            .saw(|events| status_reached(events, "connected"))
+            .await,
+        "the remembered key did not open a shell: {:?}",
+        second.log()
+    );
+
+    let log = second.log();
+    assert!(
+        !log.iter().any(|(event, _)| event == EVENT_HOST_KEY),
+        "a remembered key must be used without asking: {log:?}"
+    );
+    let outcome = second.shutdown().await;
+    assert!(outcome.is_ok(), "the second session failed: {outcome:?}");
+
+    // And what the vault kept is exactly the key that was approved.
+    let mut reopened = temp.vault();
+    reopened.unlock(VAULT_PASSWORD).expect("the vault unlocked");
+    let stored = HostKeyTrust::new(Arc::default(), Some(VaultState::new(reopened).handle()))
+        .lookup(&host_key_id(&server.host, server.port))
+        .await;
+    assert_eq!(
+        stored,
+        Some(KnownKey {
+            algorithm: prompt["algorithm"].as_str().unwrap_or_default().to_string(),
+            fingerprint: prompt["fingerprint"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        }),
+        "the vault did not keep the key that was approved"
     );
 }
 

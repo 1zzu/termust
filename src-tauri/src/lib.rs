@@ -92,7 +92,9 @@ pub fn run() {
             inventory::rename_credential,
             inventory::replace_password,
             inventory::replace_private_key,
-            inventory::delete_credential
+            inventory::delete_credential,
+            inventory::list_known_hosts,
+            inventory::forget_known_host
         ])
         .run(tauri::generate_context!());
 
@@ -113,19 +115,23 @@ mod tests {
     use tauri::test::{
         INVOKE_KEY, MockRuntime, get_ipc_response, mock_builder, mock_context, noop_assets,
     };
-    use tauri::{App, WebviewWindow, WebviewWindowBuilder};
+    use tauri::{App, Manager, WebviewWindow, WebviewWindowBuilder};
 
     use super::{disconnect_ssh, resize_ssh, respond_host_key, write_ssh};
+    use crate::inventory::{KnownKey, remember_known_host};
     use crate::ssh::SshState;
+    use crate::vault::{VaultState, test_support::TempVault};
 
     /// A window over the session commands, wired exactly as the app wires them.
     ///
-    /// `connect_ssh` is missing on purpose: it takes a concrete `AppHandle`,
-    /// which a mock runtime cannot hand to a command. Its only argument is the
-    /// nested request, whose field names are covered by the serde test in
-    /// `ssh::tests`. The vault commands are missing for the same reason; their
-    /// behaviour is covered directly against `vault::Vault`. Keep this list in
-    /// step with `run`.
+    /// `connect_ssh` is missing on purpose: it needs the session state and a
+    /// concrete `AppHandle`, which a mock runtime cannot hand to a command. Its
+    /// only argument is the nested request, whose field names are covered by the
+    /// serde test in `ssh::tests`. The vault and inventory commands are missing
+    /// for the same reason; their behaviour is covered against `vault::Vault`
+    /// and the inventory service. The known-host commands are the exception:
+    /// they are generic over the runtime exactly so this harness can drive them.
+    /// Keep this list in step with `run`.
     fn mock_window() -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
         let app = mock_builder()
             .manage(SshState::default())
@@ -230,5 +236,104 @@ mod tests {
         );
 
         assert!(response.is_ok(), "answering reported {response:?}");
+    }
+
+    const VAULT_PASSWORD: &str = "a-strong-master-password";
+
+    /// A window over the known-host commands, with a real vault of its own on a
+    /// temporary database, either left open or locked.
+    fn known_host_window(open: bool) -> (App<MockRuntime>, WebviewWindow<MockRuntime>, TempVault) {
+        let temp = TempVault::new();
+        let mut vault = temp.vault();
+        vault.create(VAULT_PASSWORD).expect("the vault was created");
+        if !open {
+            vault.lock();
+        }
+
+        let app = mock_builder()
+            .manage(VaultState::new(vault))
+            // Qualified on purpose: naming the handlers here means a rename
+            // breaks this test at compile time, not at run time.
+            .invoke_handler(tauri::generate_handler![
+                crate::inventory::list_known_hosts,
+                crate::inventory::forget_known_host
+            ])
+            .build(mock_context(noop_assets()))
+            .expect("the app built");
+        let webview = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("the window built");
+
+        (app, webview, temp)
+    }
+
+    /// The exact payload the frontend receives, over Tauri's own dispatch. Both
+    /// directions of this contract are pinned here: the command names, the
+    /// argument names, and the camelCase field names of the response.
+    #[test]
+    fn the_known_host_commands_answer_over_ipc() {
+        let (app, webview, _temp) = known_host_window(true);
+
+        // Nothing is trusted before anything was approved.
+        assert_eq!(
+            invoke(&webview, "list_known_hosts", json!({})).expect("the list answered"),
+            json!([])
+        );
+
+        // A record can only come from the SSH prompt: there is no command that
+        // writes one, so the test writes it the way a session does.
+        let key = KnownKey {
+            algorithm: "ssh-ed25519".to_string(),
+            fingerprint: "SHA256:abc".to_string(),
+        };
+        let record = app.state::<VaultState>().handle().with(|vault| {
+            remember_known_host(vault, "example.com:22", &key).expect("the key was remembered")
+        });
+
+        let listed = invoke(&webview, "list_known_hosts", json!({})).expect("the list answered");
+        assert_eq!(
+            listed,
+            json!([{
+                "version": 1,
+                "id": record.id,
+                "hostKeyId": "example.com:22",
+                "keyAlgorithm": "ssh-ed25519",
+                "fingerprintSha256": "SHA256:abc",
+                "createdAt": record.created_at,
+                "updatedAt": record.updated_at,
+            }]),
+            "the frontend contract changed"
+        );
+
+        assert!(
+            invoke(&webview, "forget_known_host", json!({ "id": record.id })).is_ok(),
+            "forgetting a known host failed"
+        );
+        assert_eq!(
+            invoke(&webview, "list_known_hosts", json!({})).expect("the list answered"),
+            json!([]),
+            "a forgotten host must not be listed"
+        );
+
+        // The argument name is part of the contract too: a renamed one is a
+        // rejected call rather than a silent no-op.
+        assert!(
+            invoke(
+                &webview,
+                "forget_known_host",
+                json!({ "knownHostId": "example.com:22" })
+            )
+            .is_err(),
+            "an unknown argument name was accepted"
+        );
+    }
+
+    #[test]
+    fn the_known_host_commands_refuse_a_locked_vault() {
+        let (_app, webview, _temp) = known_host_window(false);
+
+        let error = invoke(&webview, "list_known_hosts", json!({})).expect_err("a locked vault");
+
+        assert_eq!(error, json!("The vault is locked. Unlock it first."));
     }
 }

@@ -1,16 +1,26 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// The IPC boundary is the only thing mocked here: these tests pin the command
+// names and argument names the backend has to answer to.
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+
+import { invoke } from '@tauri-apps/api/core';
 
 import {
 	NO_RELATION,
+	addedAt,
 	credentialFormProblem,
 	emptyCredentialForm,
 	emptyHostForm,
 	emptyInventory,
+	forgetKnownHost,
 	hostFormProblem,
 	hostInput,
 	inventoryVisible,
+	listKnownHosts,
 	type CredentialSummary,
-	type HostFormValues
+	type HostFormValues,
+	type KnownHost
 } from './inventory';
 
 const SECRET_MARKER = 'marker-secret-2f7';
@@ -33,9 +43,64 @@ describe('emptyInventory', () => {
 	it('empties every list the panel holds when the vault locks', () => {
 		const cleared = emptyInventory();
 
-		expect(cleared).toEqual({ hosts: [], groups: [], credentials: [] });
+		expect(cleared).toEqual({ hosts: [], groups: [], credentials: [], knownHosts: [] });
 		// A new object each time, so two callers never share one array.
 		expect(emptyInventory()).not.toBe(cleared);
+	});
+});
+
+describe('known host IPC', () => {
+	beforeEach(() => {
+		vi.mocked(invoke).mockReset();
+	});
+
+	it('lists known hosts with no arguments', async () => {
+		vi.mocked(invoke).mockResolvedValue([]);
+
+		await listKnownHosts();
+
+		expect(invoke).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(invoke).mock.calls[0][0]).toBe('list_known_hosts');
+		expect(vi.mocked(invoke).mock.calls[0][1]).toBeUndefined();
+	});
+
+	it('forgets a known host by its id', async () => {
+		vi.mocked(invoke).mockResolvedValue(null);
+
+		await forgetKnownHost('known-1');
+
+		expect(invoke).toHaveBeenCalledWith('forget_known_host', { id: 'known-1' });
+	});
+});
+
+describe('KnownHost', () => {
+	it('carries no secret and no address of its own', () => {
+		const known: KnownHost = {
+			id: 'known-1',
+			hostKeyId: 'example.com:22',
+			keyAlgorithm: 'ssh-ed25519',
+			fingerprintSha256: 'SHA256:abc',
+			createdAt: 1,
+			updatedAt: 2
+		};
+
+		expect(Object.keys(known).sort()).toEqual([
+			'createdAt',
+			'fingerprintSha256',
+			'hostKeyId',
+			'id',
+			'keyAlgorithm',
+			'updatedAt'
+		]);
+	});
+});
+
+describe('addedAt', () => {
+	it('reads the backend seconds as a date', () => {
+		const seconds = 1_700_000_000;
+
+		expect(addedAt(seconds)).toBe(new Date(seconds * 1000).toLocaleString());
+		expect(addedAt(seconds)).not.toBe(new Date(seconds).toLocaleString());
 	});
 });
 

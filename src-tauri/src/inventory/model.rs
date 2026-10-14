@@ -21,6 +21,7 @@ use super::InventoryError;
 pub const KIND_GROUP: &str = "group";
 pub const KIND_HOST: &str = "host";
 pub const KIND_CREDENTIAL: &str = "credential";
+pub const KIND_KNOWN_HOST: &str = "known_host";
 
 /// The payload version this build writes for every new record.
 pub const PAYLOAD_VERSION: u8 = 1;
@@ -30,6 +31,9 @@ pub const MAX_NAME_LEN: usize = 100;
 pub const MAX_LABEL_LEN: usize = 100;
 pub const MAX_ADDRESS_LEN: usize = 255;
 pub const MAX_USERNAME_LEN: usize = 100;
+/// A key algorithm name and a `SHA256:` fingerprint are both short.
+pub const MAX_ALGORITHM_LEN: usize = 64;
+pub const MAX_FINGERPRINT_LEN: usize = 128;
 /// A password, a private key or a passphrase can be large, but not unbounded.
 pub const MAX_SECRET_LEN: usize = 16 * 1024;
 
@@ -162,6 +166,42 @@ pub struct HostInput {
     pub group_id: Option<String>,
     #[serde(default)]
     pub credential_id: Option<String>,
+}
+
+/// One SSH host key this device has been told to trust.
+///
+/// The record is keyed by `host_key_id`, the canonical identity the SSH layer
+/// builds from the host and the port. The address itself lives inside the
+/// encrypted payload, never in a plaintext column.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownHost {
+    pub version: u8,
+    pub id: String,
+    pub host_key_id: String,
+    pub key_algorithm: String,
+    pub fingerprint_sha256: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// The key half of a known host: what a server has to present to be trusted.
+///
+/// Both parts are compared. A key that keeps its fingerprint but changes its
+/// algorithm is a different key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownKey {
+    pub algorithm: String,
+    pub fingerprint: String,
+}
+
+impl KnownHost {
+    pub fn key(&self) -> KnownKey {
+        KnownKey {
+            algorithm: self.key_algorithm.clone(),
+            fingerprint: self.fingerprint_sha256.clone(),
+        }
+    }
 }
 
 /// A required text field, trimmed to its final value.

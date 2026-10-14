@@ -37,10 +37,24 @@ export interface CredentialSummary {
 	updatedAt: number;
 }
 
+/**
+ * An SSH host key this device has been told to trust. The address lives in
+ * `hostKeyId`, which the backend builds from the host and the port.
+ */
+export interface KnownHost {
+	id: string;
+	hostKeyId: string;
+	keyAlgorithm: string;
+	fingerprintSha256: string;
+	createdAt: number;
+	updatedAt: number;
+}
+
 export interface Inventory {
 	hosts: Host[];
 	groups: Group[];
 	credentials: CredentialSummary[];
+	knownHosts: KnownHost[];
 }
 
 /**
@@ -49,7 +63,7 @@ export interface Inventory {
  * means no two places can end up sharing one array.
  */
 export function emptyInventory(): Inventory {
-	return { hosts: [], groups: [], credentials: [] };
+	return { hosts: [], groups: [], credentials: [], knownHosts: [] };
 }
 
 // --- IPC ------------------------------------------------------------------
@@ -127,6 +141,25 @@ export function replacePrivateKey(
 
 export function deleteCredential(id: string): Promise<void> {
 	return invoke('delete_credential', { id });
+}
+
+// --- known hosts ----------------------------------------------------------
+
+/** Every host key this device trusts. Read-only: approving happens in the SSH prompt. */
+export function listKnownHosts(): Promise<KnownHost[]> {
+	return invoke('list_known_hosts');
+}
+
+export function forgetKnownHost(id: string): Promise<void> {
+	return invoke('forget_known_host', { id });
+}
+
+/**
+ * When a key was remembered, as the browser formats a date. The backend counts
+ * seconds; `Date` counts milliseconds.
+ */
+export function addedAt(seconds: number): string {
+	return new Date(seconds * 1000).toLocaleString();
 }
 
 // --- host form ------------------------------------------------------------

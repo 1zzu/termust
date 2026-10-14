@@ -13,6 +13,7 @@ Tidak ada tabel baru. Setiap record adalah satu row `vault_objects` dengan salah
 | Group      | `group`      |
 | Host       | `host`       |
 | Credential | `credential` |
+| Known host | `known_host` |
 
 `kind` ikut menjadi bagian Additional Authenticated Data, jadi sebuah object tidak dapat dibaca
 sebagai kind lain: ciphertext group tidak akan pernah bisa diparse sebagai Host. Enkripsi, nonce,
@@ -96,6 +97,52 @@ Tidak ada field secret pada tipe itu, sehingga secret tidak dapat dikirim kembal
   baru.
 - Mengganti secret berarti mengirim nilai baru, bukan membaca yang lama.
 
+## Known host
+
+Satu SSH host key yang pernah disetujui pengguna untuk satu target.
+
+```json
+{
+	"version": 1,
+	"id": "…",
+	"hostKeyId": "example.com:22",
+	"keyAlgorithm": "ssh-ed25519",
+	"fingerprintSha256": "SHA256:…",
+	"createdAt": 1760000000,
+	"updatedAt": 1760000000
+}
+```
+
+- `hostKeyId` adalah identitas kanonik target, dan sekaligus kunci keunikan: hanya ada satu known
+  host aktif untuk satu identitas. Menyetujui host yang sama dua kali menulis ulang record yang
+  sudah ada, bukan menambah record kedua.
+- `keyAlgorithm` dan `fingerprintSha256` adalah pasangan yang dibandingkan saat connect. Keduanya
+  disimpan di dalam payload terenkripsi, jadi nama host dan fingerprint tidak pernah muncul sebagai
+  plaintext di database.
+- Public key mentah tidak disimpan: algoritma dan fingerprint sudah cukup untuk menolak key yang
+  berbeda.
+
+### Identitas kanonik `host_key_id`
+
+Bentuknya `<host>:<port>`, dengan port selalu ikut sehingga host yang sama di port berbeda adalah
+identitas berbeda. Sebelum dipakai, nama host di-trim, hurufnya dijadikan kecil (DNS tidak
+membedakan huruf besar/kecil), dan tanda kurung siku di sekelilingnya dilepas. Literal IPv6 diberi
+kurung siku seperti URL, sehingga `::1` pada port 22 menjadi `[::1]:22` dan tidak dapat terbaca
+sebagai host `::1:22`.
+
+### Kapan approval berlaku
+
+| Keadaan vault                | Yang terjadi                                                                                                                   |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Unlocked, host belum dikenal | Prompt muncul; menerima menyimpan known host ke vault.                                                                         |
+| Unlocked, host sudah dikenal | Key dibandingkan; cocok berarti connect tanpa prompt.                                                                          |
+| Locked                       | Record tidak dapat dibaca, jadi host dianggap belum dikenal dan prompt muncul; approval hanya berlaku sampai aplikasi ditutup. |
+| Key berbeda                  | Koneksi diblokir, fingerprint lama dan baru ditampilkan, dan key baru tidak disimpan.                                          |
+
+Key yang berubah tidak pernah diganti otomatis dan tidak ada tombol untuk menerimanya. Untuk
+trust key baru, pengguna harus melupakan known host lama lebih dulu, lalu menyetujui key yang
+baru saat connect berikutnya.
+
 ## Relasi
 
 Relasi disimpan sebagai id, bukan salinan data:
@@ -119,6 +166,6 @@ hilang dari daftar aktif dan tidak dapat dibaca lagi.
 
 ## Yang belum ada
 
-Connecting dari saved Host, persistent known-host, auto-run credential, SSH agent, certificate,
-tags, notes, search, import OpenSSH config, backup/export/import, auto-lock, dan sinkronisasi
-berada di luar Phase 1B1.
+Connecting dari saved Host, memakai saved Credential untuk koneksi, auto-run credential, SSH agent,
+certificate, tags, notes, search, import `known_hosts` OpenSSH, wildcard host, jump host, backup,
+auto-lock, dan sinkronisasi berada di luar fase ini.

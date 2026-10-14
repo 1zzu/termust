@@ -6,7 +6,6 @@
 //! the app and the live tests run exactly the same code.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
@@ -15,8 +14,10 @@ use russh::{ChannelMsg, Disconnect, Preferred};
 use tokio::sync::{mpsc, oneshot};
 
 use super::auth::authenticate;
-use super::host_key::{HostKeyProbe, take_reason};
+use super::host_key::{HostKeyProbe, host_key_id, take_approval, take_reason};
+use super::known_hosts::HostKeyTrust;
 use super::{ConnectRequest, Notifier, Status, emit_data, emit_status};
+use crate::inventory::KnownKey;
 
 /// Terminal type advertised to the server. The UI configures xterm.js to match.
 const TERM: &str = "xterm-256color";
@@ -64,31 +65,51 @@ pub(super) async fn run_session(
     request: ConnectRequest,
     mut commands: mpsc::Receiver<Command>,
     decision: oneshot::Receiver<bool>,
-    known_hosts: Arc<StdMutex<HashMap<String, String>>>,
+    trust: HostKeyTrust,
 ) -> Result<(), String> {
     let session_id = request.session_id.clone();
     emit_status(&notifier, &session_id, Status::Connecting, None);
 
+    // The two questions the trust rule needs are both answered before the
+    // handshake starts, so nothing reads the vault while the connection is being
+    // set up. A locked vault simply answers "nothing recorded" and "cannot keep
+    // this", which is what makes Quick Connect work without an open vault.
+    let key_id = host_key_id(&request.host, request.port);
+    let known = trust.lookup(&key_id).await;
+    let persistent = trust.can_persist().await;
+
     // Records why a host key was refused, so the reason survives the handshake
     // aborting with a generic `UnknownKey`.
     let rejection_reason: Arc<StdMutex<Option<String>>> = Arc::default();
+    // Records the key the user approved, so it can be stored once the handshake
+    // has ended and the connection task is not holding anything.
+    let approved: Arc<StdMutex<Option<KnownKey>>> = Arc::default();
     let probe = HostKeyProbe {
         notifier: Arc::clone(&notifier),
         session_id: session_id.clone(),
         host: request.host.clone(),
         port: request.port,
         decision: Some(decision),
-        known_hosts,
+        known,
+        persistent,
+        approved: Arc::clone(&approved),
         rejection_reason: Arc::clone(&rejection_reason),
     };
 
-    let mut handle = match client::connect(
+    let connected = client::connect(
         Arc::new(session_config()),
         (request.host.as_str(), request.port),
         probe,
     )
-    .await
-    {
+    .await;
+
+    // An approved key is stored whether or not the rest of the handshake worked:
+    // the user decided about the key, not about the login.
+    if let Some(key) = take_approval(&approved) {
+        trust.remember(&key_id, &key).await;
+    }
+
+    let mut handle = match connected {
         Ok(handle) => handle,
         Err(russh::Error::UnknownKey) => {
             return Err(take_reason(&rejection_reason).unwrap_or_else(|| {

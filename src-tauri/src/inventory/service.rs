@@ -15,7 +15,8 @@ use crate::vault::{Vault, VaultObject, new_id, now};
 use super::InventoryError;
 use super::model::{
     Credential, CredentialSecret, CredentialSummary, Group, Host, HostInput, KIND_CREDENTIAL,
-    KIND_GROUP, KIND_HOST, MAX_ADDRESS_LEN, MAX_LABEL_LEN, MAX_NAME_LEN, MAX_USERNAME_LEN,
+    KIND_GROUP, KIND_HOST, KIND_KNOWN_HOST, KnownHost, KnownKey, MAX_ADDRESS_LEN,
+    MAX_ALGORITHM_LEN, MAX_FINGERPRINT_LEN, MAX_LABEL_LEN, MAX_NAME_LEN, MAX_USERNAME_LEN,
     PAYLOAD_VERSION, optional_id, optional_secret, required, secret, valid_port,
 };
 
@@ -344,4 +345,70 @@ fn build_credential(
         created_at: created_at.unwrap_or(timestamp),
         updated_at: timestamp,
     }
+}
+
+// --- known hosts ----------------------------------------------------------
+
+pub fn list_known_hosts(vault: &Vault) -> Result<Vec<KnownHost>, InventoryError> {
+    let mut known: Vec<KnownHost> = load_all(vault, KIND_KNOWN_HOST)?;
+    known.sort_by(|left, right| left.host_key_id.cmp(&right.host_key_id));
+    Ok(known)
+}
+
+/// The active record for one canonical host identity, if there is one.
+pub fn find_known_host(
+    vault: &Vault,
+    host_key_id: &str,
+) -> Result<Option<KnownHost>, InventoryError> {
+    Ok(list_known_hosts(vault)?
+        .into_iter()
+        .find(|known| known.host_key_id == host_key_id))
+}
+
+/// Records that this device trusts one server's key.
+///
+/// Approving the same host twice updates the record it already has instead of
+/// adding a second one, so a repeated decision can never leave two active rows
+/// for one identity.
+pub fn remember_known_host(
+    vault: &Vault,
+    host_key_id: &str,
+    key: &KnownKey,
+) -> Result<KnownHost, InventoryError> {
+    let host_key_id = required(host_key_id, "Host identity", MAX_ADDRESS_LEN)?;
+    let algorithm = required(&key.algorithm, "Key algorithm", MAX_ALGORITHM_LEN)?;
+    let fingerprint = required(&key.fingerprint, "Fingerprint", MAX_FINGERPRINT_LEN)?;
+
+    let timestamp = now();
+    let existing = find_known_host(vault, &host_key_id)?;
+    let id = match &existing {
+        Some(record) => record.id.clone(),
+        None => new_id()?,
+    };
+    let known = KnownHost {
+        version: PAYLOAD_VERSION,
+        id,
+        host_key_id,
+        key_algorithm: algorithm,
+        fingerprint_sha256: fingerprint,
+        created_at: existing
+            .as_ref()
+            .map(|record| record.created_at)
+            .unwrap_or(timestamp),
+        updated_at: timestamp,
+    };
+
+    if existing.is_some() {
+        overwrite(vault, &known.id, &known)?;
+    } else {
+        insert(vault, &known.id, KIND_KNOWN_HOST, &known)?;
+    }
+    Ok(known)
+}
+
+/// Forgets one approved key. The next connection to that host asks again.
+pub fn forget_known_host(vault: &Vault, id: &str) -> Result<(), InventoryError> {
+    let _: KnownHost = load(vault, id, KIND_KNOWN_HOST)?;
+    vault.delete_object(id)?;
+    Ok(())
 }

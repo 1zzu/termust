@@ -22,12 +22,18 @@ mod tests;
 
 use std::fmt;
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Runtime};
 use zeroize::Zeroizing;
 
 use crate::vault::{VaultError, blocking};
 
-use model::{CredentialSummary, Group, Host, HostInput};
+use model::{CredentialSummary, Group, Host, HostInput, KnownHost};
+
+/// The known-host pieces the SSH layer uses: an approved host key is an
+/// inventory record like any other, so the session reads and writes it here
+/// instead of touching SQLite or a key itself.
+pub(crate) use model::KnownKey;
+pub(crate) use service::{find_known_host, remember_known_host};
 
 /// Everything an inventory operation can fail with.
 ///
@@ -231,4 +237,18 @@ pub async fn replace_private_key(
 #[tauri::command]
 pub async fn delete_credential(app: AppHandle, id: String) -> Result<(), String> {
     blocking(app, move |vault| service::delete_credential(vault, &id)).await
+}
+
+// --- known hosts ----------------------------------------------------------
+
+#[tauri::command]
+pub async fn list_known_hosts<R: Runtime>(app: AppHandle<R>) -> Result<Vec<KnownHost>, String> {
+    blocking(app, |vault| service::list_known_hosts(vault)).await
+}
+
+/// Forgets one approved key. There is deliberately no command that writes one:
+/// a key is only ever trusted through the SSH host-key prompt.
+#[tauri::command]
+pub async fn forget_known_host<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
+    blocking(app, move |vault| service::forget_known_host(vault, &id)).await
 }

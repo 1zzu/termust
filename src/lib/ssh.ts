@@ -74,6 +74,18 @@ export function isConnected(status: ConnectionStatus): boolean {
 	return status === 'connected';
 }
 
+/**
+ * What accepting a host key will mean, in the words the prompt shows.
+ *
+ * The backend decides whether the approval can be stored, so the prompt never
+ * promises more than the vault can keep.
+ */
+export function hostKeyPromise(persistent: boolean): string {
+	return persistent
+		? 'This key is stored in your local vault, so this device will not ask again.'
+		: 'The vault is locked, so this key is remembered only until the app closes. Unlock the vault to store it for good.';
+}
+
 // `errorMessage` is shared with the vault UI, so it lives in `errors.ts`.
 // Re-exported here so the SSH call sites keep their existing import.
 export { errorMessage } from './errors';

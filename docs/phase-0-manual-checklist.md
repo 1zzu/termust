@@ -53,13 +53,17 @@ daftar ini setelah perubahan terakhir pada Phase 0.
 
 ## C. Verifikasi host key
 
+Catatan: Phase 1B2a menyimpan approval di vault, jadi dua item di bawah ini menggantikan
+perilaku "known-hosts hanya hidup selama aplikasi berjalan" yang diuji pada Phase 0.
+
 - [ ] Koneksi pertama ke host baru memunculkan dialog fingerprint berisi host, port,
       algoritma, dan fingerprint `SHA256:...`.
 - [ ] Tombol Cancel membatalkan koneksi: tidak ada shell, tidak ada output terminal, dan
       status berakhir sebagai error.
 - [ ] Tombol "Accept and connect" melanjutkan koneksi sampai shell terbuka.
-- [ ] Setelah aplikasi di-restart, koneksi ke host yang sama meminta fingerprint kembali
-      karena known-hosts hanya hidup selama aplikasi berjalan.
+- [ ] Dengan vault unlocked, setelah aplikasi di-restart koneksi ke host yang sama **tidak**
+      meminta fingerprint lagi; dengan vault locked, dialog fingerprint muncul kembali dan
+      dialognya menjelaskan bahwa approval kali ini hanya berlaku sampai aplikasi ditutup.
 - [ ] Host key yang berubah diblokir: hubungkan sekali dan setujui, restart server uji
       sehingga host key-nya baru, lalu connect lagi dari aplikasi yang masih berjalan. Kali
       ini koneksi ditolak tanpa dialog persetujuan, dan pesannya menyebut host key berubah.

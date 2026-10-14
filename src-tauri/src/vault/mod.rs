@@ -30,10 +30,10 @@ mod tests;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Runtime};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -420,32 +420,59 @@ fn decrypt_object(key: &SecretKey, object: &StoredObject) -> Result<VaultObject,
 
 /// The vault as the Tauri commands see it: one instance behind a mutex.
 pub struct VaultState {
-    vault: Mutex<Vault>,
+    vault: Arc<Mutex<Vault>>,
 }
 
 impl VaultState {
     pub fn new(vault: Vault) -> Self {
         Self {
-            vault: Mutex::new(vault),
+            vault: Arc::new(Mutex::new(vault)),
         }
     }
 
     fn lock(&self) -> MutexGuard<'_, Vault> {
-        // A poisoned lock only means an earlier command panicked; the vault is
-        // still usable, so recover instead of failing every later command.
-        self.vault
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.vault.lock().unwrap_or_else(poisoned)
     }
+
+    /// A handle on the same vault, for code that runs outside a command.
+    ///
+    /// An SSH session task outlives the command that started it and must not
+    /// hold an `AppHandle`, so it is given this instead. The lock is only ever
+    /// taken around one storage call, never across network work.
+    pub(crate) fn handle(&self) -> VaultHandle {
+        VaultHandle(Arc::clone(&self.vault))
+    }
+}
+
+/// A shared handle on the one vault.
+#[derive(Clone)]
+pub(crate) struct VaultHandle(Arc<Mutex<Vault>>);
+
+impl VaultHandle {
+    /// Runs one closure with the vault locked. Keep it to a single storage call:
+    /// the lock is shared with every command.
+    pub(crate) fn with<R>(&self, work: impl FnOnce(&Vault) -> R) -> R {
+        let vault = self.0.lock().unwrap_or_else(poisoned);
+        work(&vault)
+    }
+}
+
+/// A poisoned lock only means an earlier caller panicked. The vault itself is
+/// still usable, so recover instead of failing every later call.
+fn poisoned<T>(error: std::sync::PoisonError<T>) -> T {
+    error.into_inner()
 }
 
 /// Runs one blocking vault operation on the blocking pool.
 ///
 /// Both Argon2id and SQLite block the calling thread, so no command does its
 /// work on the UI thread. The error type is generic so the inventory commands,
-/// which report their own error type, reach the vault through the same path.
-pub(crate) async fn blocking<T, E, F>(app: AppHandle, work: F) -> Result<T, String>
+/// which report their own error type, reach the vault through the same path,
+/// and the runtime is generic so a command can be driven by Tauri's mock
+/// runtime in a test and by the real one in the app.
+pub(crate) async fn blocking<R, T, E, F>(app: AppHandle<R>, work: F) -> Result<T, String>
 where
+    R: Runtime,
     T: Send + 'static,
     E: fmt::Display + Send + 'static,
     F: FnOnce(&mut Vault) -> Result<T, E> + Send + 'static,

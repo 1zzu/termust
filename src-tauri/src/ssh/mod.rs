@@ -10,6 +10,8 @@
 //!
 //! - `session.rs`: the lifetime of one connection, and the algorithm policy.
 //! - `host_key.rs`: whether a server's host key may be used.
+//! - `known_hosts.rs`: where an approved key is remembered, in memory and in the
+//!   encrypted vault.
 //! - `auth.rs`: password and private-key authentication.
 //!
 //! Nothing in this module writes credentials to disk or to a log. The connect
@@ -18,6 +20,7 @@
 
 mod auth;
 mod host_key;
+mod known_hosts;
 mod session;
 
 #[cfg(test)]
@@ -27,6 +30,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard};
 use std::time::Duration;
 
+use known_hosts::HostKeyTrust;
+
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
@@ -34,6 +39,7 @@ use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::vault;
 use session::{Command, run_session};
 
 /// Event names shared with the frontend. Keep in sync with `src/lib/ssh.ts`.
@@ -58,9 +64,12 @@ type Notifier = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 #[derive(Default)]
 pub struct SshState {
     sessions: StdMutex<HashMap<String, Session>>,
-    /// Host keys approved during this run. The spike keeps them in memory only;
-    /// persisting them was explicitly left for a later phase.
-    known_hosts: Arc<StdMutex<HashMap<String, String>>>,
+    /// Host keys approved during this run, by canonical host identity.
+    ///
+    /// This is what makes a locked vault usable: an approval given while the
+    /// vault is closed still holds until the app exits. With the vault open the
+    /// same approval is also written to it, which is what outlives a restart.
+    known_hosts: known_hosts::Remembered,
 }
 
 impl SshState {
@@ -188,6 +197,9 @@ struct HostKeyEvent {
     port: u16,
     algorithm: String,
     fingerprint: String,
+    /// Whether accepting this key will still be trusted after a restart. Only
+    /// the backend can answer this, because only it knows if the vault is open.
+    persistent: bool,
 }
 
 #[derive(Serialize)]
@@ -215,7 +227,12 @@ pub fn start(app: &AppHandle, state: &SshState, request: ConnectRequest) -> Resu
 
     let session_id = request.session_id.clone();
     let session_id_for_task = session_id.clone();
-    let known_hosts = Arc::clone(&state.known_hosts);
+    // The session task outlives this command, so it is given a handle on the
+    // vault instead of the `AppHandle` this command was called with.
+    let vault = app
+        .try_state::<vault::VaultState>()
+        .map(|state| state.handle());
+    let trust = HostKeyTrust::new(Arc::clone(&state.known_hosts), vault);
     let app_for_task = app.clone();
 
     let notify_app = app.clone();
@@ -241,7 +258,7 @@ pub fn start(app: &AppHandle, state: &SshState, request: ConnectRequest) -> Resu
             request,
             commands_rx,
             decision_rx,
-            known_hosts,
+            trust,
         )
         .await;
 

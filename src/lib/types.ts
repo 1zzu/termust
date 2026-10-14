@@ -48,6 +48,11 @@ export interface HostKeyEvent {
 	port: number;
 	algorithm: string;
 	fingerprint: string;
+	/**
+	 * Whether accepting will still be trusted after a restart. The backend
+	 * decides this, because only it knows whether the vault is unlocked.
+	 */
+	persistent: boolean;
 }
 
 export interface ErrorEvent {

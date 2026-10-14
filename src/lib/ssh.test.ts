@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
-
-import { belongsToSession, decodeOutput, errorMessage, isConnected, statusLabel } from './ssh';
+import {
+	belongsToSession,
+	decodeOutput,
+	errorMessage,
+	hostKeyPromise,
+	isConnected,
+	statusLabel
+} from './ssh';
 import type { ConnectionStatus } from './types';
 
 describe('belongsToSession', () => {
@@ -66,6 +72,19 @@ describe('isConnected', () => {
 		expect(isConnected('connected')).toBe(true);
 		expect(isConnected('authenticating')).toBe(false);
 		expect(isConnected('disconnected')).toBe(false);
+	});
+});
+
+describe('hostKeyPromise', () => {
+	it('promises only what the vault can keep', () => {
+		const stored = hostKeyPromise(true);
+		const temporary = hostKeyPromise(false);
+
+		expect(stored).toContain('local vault');
+		expect(stored).not.toContain('until the app closes');
+		expect(temporary).toContain('until the app closes');
+		expect(temporary).toContain('Unlock the vault');
+		expect(temporary).not.toContain('will not ask again');
 	});
 });
 

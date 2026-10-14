@@ -42,6 +42,7 @@
 		decodeOutput,
 		disconnectSsh,
 		errorMessage,
+		hostKeyPromise,
 		isConnected,
 		resizeSsh,
 		respondHostKey,
@@ -384,6 +385,9 @@
 				<DialogDescription>
 					This is the first connection to this host. Compare the fingerprint with the server
 					operator before continuing, or cancel to stop the connection.
+					{#if hostKeyPrompt}
+						{hostKeyPromise(hostKeyPrompt.persistent)}
+					{/if}
 				</DialogDescription>
 			</DialogHeader>
 

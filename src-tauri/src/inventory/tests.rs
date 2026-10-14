@@ -14,7 +14,7 @@ use crate::vault::{Vault, VaultError, VaultStatus};
 
 use super::InventoryError;
 use super::model::{
-    Credential, CredentialKind, CredentialSecret, HostInput, KIND_CREDENTIAL, KIND_GROUP,
+    Credential, CredentialKind, CredentialSecret, HostInput, KIND_CREDENTIAL, KIND_GROUP, KnownKey,
     PAYLOAD_VERSION,
 };
 use super::service;
@@ -28,6 +28,8 @@ const PASSWORD_MARKER: &str = "marker-password-8f2a";
 const KEY_MARKER: &str = "marker-private-key-3c1b";
 const PASSPHRASE_MARKER: &str = "marker-passphrase-7d4e";
 const KEY_MATERIAL: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nnot-a-real-key\n";
+const KNOWN_HOST_MARKER: &str = "marker-known-host-6a9c.example.com";
+const FINGERPRINT_MARKER: &str = "SHA256:marker-fingerprint-b3d7";
 
 /// A temporary vault that has been created and is left unlocked.
 fn unlocked_vault() -> (TempVault, Vault) {
@@ -596,6 +598,176 @@ fn host_operations_are_refused_while_locked() {
     }
 }
 
+// --- known hosts ----------------------------------------------------------
+
+fn known_key(fingerprint: &str) -> KnownKey {
+    KnownKey {
+        algorithm: "ssh-ed25519".to_string(),
+        fingerprint: fingerprint.to_string(),
+    }
+}
+
+#[test]
+fn a_known_host_can_be_remembered_listed_and_forgotten() {
+    let (_temp, vault) = unlocked_vault();
+
+    let known =
+        service::remember_known_host(&vault, KNOWN_HOST_MARKER, &known_key(FINGERPRINT_MARKER))
+            .unwrap();
+    assert_eq!(known.host_key_id, KNOWN_HOST_MARKER);
+    assert_eq!(known.key_algorithm, "ssh-ed25519");
+    assert_eq!(known.fingerprint_sha256, FINGERPRINT_MARKER);
+
+    let listed = service::list_known_hosts(&vault).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, known.id);
+
+    service::forget_known_host(&vault, &known.id).unwrap();
+    assert!(service::list_known_hosts(&vault).unwrap().is_empty());
+}
+
+#[test]
+fn remembering_the_same_identity_twice_keeps_one_record() {
+    let (_temp, vault) = unlocked_vault();
+
+    let first =
+        service::remember_known_host(&vault, "example.com:22", &known_key("SHA256:one")).unwrap();
+    let second =
+        service::remember_known_host(&vault, "example.com:22", &known_key("SHA256:two")).unwrap();
+
+    assert_eq!(first.id, second.id, "the same record was rewritten");
+    assert_eq!(first.created_at, second.created_at);
+    let listed = service::list_known_hosts(&vault).unwrap();
+    assert_eq!(listed.len(), 1, "a repeated approval must not duplicate");
+    assert_eq!(listed[0].fingerprint_sha256, "SHA256:two");
+}
+
+#[test]
+fn the_same_host_on_another_port_is_another_record() {
+    let (_temp, vault) = unlocked_vault();
+
+    service::remember_known_host(&vault, "example.com:22", &known_key("SHA256:one")).unwrap();
+    service::remember_known_host(&vault, "example.com:2222", &known_key("SHA256:two")).unwrap();
+
+    assert_eq!(service::list_known_hosts(&vault).unwrap().len(), 2);
+    assert_eq!(
+        service::find_known_host(&vault, "example.com:22")
+            .unwrap()
+            .unwrap()
+            .fingerprint_sha256,
+        "SHA256:one"
+    );
+}
+
+#[test]
+fn a_forgotten_known_host_leaves_a_tombstone() {
+    let (temp, vault) = unlocked_vault();
+    let known =
+        service::remember_known_host(&vault, "example.com:22", &known_key("SHA256:one")).unwrap();
+
+    service::forget_known_host(&vault, &known.id).unwrap();
+
+    assert!(
+        service::find_known_host(&vault, "example.com:22")
+            .unwrap()
+            .is_none()
+    );
+    let deleted_at: Option<i64> = Connection::open(temp.database())
+        .unwrap()
+        .query_row(
+            "SELECT deleted_at FROM vault_objects WHERE id = ?1",
+            params![known.id],
+            |row| row.get(0),
+        )
+        .expect("the row is still there");
+    assert!(
+        deleted_at.is_some(),
+        "the row was removed instead of marked deleted"
+    );
+}
+
+#[test]
+fn known_hosts_survive_a_restart_and_unlock() {
+    let (temp, vault) = unlocked_vault();
+    service::remember_known_host(&vault, "example.com:22", &known_key(FINGERPRINT_MARKER)).unwrap();
+    drop(vault);
+
+    let mut reopened = temp.vault();
+    assert_eq!(reopened.status().unwrap(), VaultStatus::Locked);
+    reopened.unlock(PASSWORD).unwrap();
+
+    let kept = service::list_known_hosts(&reopened).unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].host_key_id, "example.com:22");
+    assert_eq!(kept[0].fingerprint_sha256, FINGERPRINT_MARKER);
+}
+
+#[test]
+fn an_incomplete_known_host_is_refused() {
+    let (_temp, vault) = unlocked_vault();
+
+    assert!(matches!(
+        service::remember_known_host(&vault, "   ", &known_key("SHA256:one")),
+        Err(InventoryError::Invalid(_))
+    ));
+    assert!(matches!(
+        service::remember_known_host(&vault, "example.com:22", &known_key("  ")),
+        Err(InventoryError::Invalid(_))
+    ));
+    assert!(matches!(
+        service::remember_known_host(
+            &vault,
+            "example.com:22",
+            &KnownKey {
+                algorithm: String::new(),
+                fingerprint: "SHA256:one".to_string(),
+            }
+        ),
+        Err(InventoryError::Invalid(_))
+    ));
+}
+
+#[test]
+fn known_host_operations_are_refused_while_locked() {
+    let (_temp, mut vault) = unlocked_vault();
+    let known =
+        service::remember_known_host(&vault, "example.com:22", &known_key("SHA256:one")).unwrap();
+    vault.lock();
+
+    let results = [
+        service::list_known_hosts(&vault).map(|_| ()),
+        service::find_known_host(&vault, "example.com:22").map(|_| ()),
+        service::remember_known_host(&vault, "example.com:22", &known_key("SHA256:two"))
+            .map(|_| ()),
+        service::forget_known_host(&vault, &known.id),
+    ];
+    for result in results {
+        assert!(
+            matches!(result, Err(InventoryError::Vault(VaultError::Locked))),
+            "a locked vault answered with {result:?}"
+        );
+    }
+}
+
+#[test]
+fn a_known_host_cannot_be_read_as_another_kind() {
+    let (_temp, vault) = unlocked_vault();
+    let known =
+        service::remember_known_host(&vault, "example.com:22", &known_key("SHA256:one")).unwrap();
+
+    assert!(matches!(
+        service::get_host(&vault, &known.id).unwrap_err(),
+        InventoryError::WrongKind { expected: "host" }
+    ));
+    assert!(matches!(
+        service::forget_known_host(&vault, &service::create_group(&vault, "Work").unwrap().id)
+            .unwrap_err(),
+        InventoryError::WrongKind {
+            expected: "known_host"
+        }
+    ));
+}
+
 // --- encryption and storage -----------------------------------------------
 
 #[test]
@@ -623,6 +795,8 @@ fn the_database_holds_no_plaintext_domain_data() {
         },
     )
     .unwrap();
+    service::remember_known_host(&vault, KNOWN_HOST_MARKER, &known_key(FINGERPRINT_MARKER))
+        .unwrap();
 
     // The records really are there after decryption...
     assert!(service::list_groups(&vault).unwrap()[0].name == "marker-group-4e7a");
@@ -630,8 +804,13 @@ fn the_database_holds_no_plaintext_domain_data() {
         service::list_hosts(&vault).unwrap()[0].label,
         "marker-label-2a6b"
     );
+    assert_eq!(
+        service::list_known_hosts(&vault).unwrap()[0].host_key_id,
+        KNOWN_HOST_MARKER
+    );
 
-    // ...but nothing readable is left in the database file.
+    // ...but nothing readable is left in the database file. An approved host
+    // name or fingerprint is as private as a host record.
     let bytes = fs::read(temp.database()).unwrap();
     for marker in [
         "marker-group-4e7a",
@@ -640,6 +819,8 @@ fn the_database_holds_no_plaintext_domain_data() {
         "marker-label-2a6b",
         "marker-address-7c3e",
         "marker-user-8f5d",
+        KNOWN_HOST_MARKER,
+        FINGERPRINT_MARKER,
         PASSWORD_MARKER,
         KEY_MARKER,
         PASSPHRASE_MARKER,
