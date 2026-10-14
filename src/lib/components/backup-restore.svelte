@@ -41,17 +41,18 @@
 	} from '#lib/backup';
 	import type { VaultStatus } from '#lib/vault';
 
-	// The dialogs follow the vault and the session: they are only reachable while
-	// the vault is open, locking it throws every password away, and an open SSH
-	// session stops a restore without ever disconnecting it.
+	// The dialogs follow the vault and the sessions: they are only reachable while
+	// the vault is open, locking it throws every password away, and any live SSH
+	// session — not only the one on screen — stops a restore, without ever
+	// disconnecting it.
 	let {
 		vaultStatus,
-		sessionBusy = false,
+		hasLiveSessions = false,
 		onrestored
 	}: {
 		vaultStatus: VaultStatus | undefined;
-		/** Whether a session is connected or connecting right now. */
-		sessionBusy?: boolean;
+		/** Whether any tab still has a session that is connected or connecting. */
+		hasLiveSessions?: boolean;
 		/** Called after a successful restore, so every list is re-read. */
 		onrestored?: () => void | Promise<void>;
 	} = $props();
@@ -83,8 +84,8 @@
 	let restored = $state<RestoreSummary | null>(null);
 	let restoring = $state(false);
 
-	const restoreProblemText = $derived(restoreProblem(typed, sessionBusy, restoring));
-	const canRestore = $derived(restoreReady(typed, sessionBusy, restoring));
+	const restoreProblemText = $derived(restoreProblem(typed, hasLiveSessions, restoring));
+	const canRestore = $derived(restoreReady(typed, hasLiveSessions, restoring));
 
 	$effect(() => {
 		// Anything other than an open vault means these dialogs have no business
@@ -257,17 +258,17 @@
 			size="sm"
 			variant="outline"
 			onclick={openRestore}
-			disabled={restoring || sessionBusy}
-			title={sessionBusy ? 'Disconnect the SSH session first' : undefined}
+			disabled={restoring || hasLiveSessions}
+			title={hasLiveSessions ? 'Disconnect every SSH session first' : undefined}
 		>
 			Restore from backup
 		</Button>
 	</div>
 
-	{#if sessionBusy}
+	{#if hasLiveSessions}
 		<p class="text-xs text-amber-500">
-			An SSH session is open. A restore is refused while one is running, so disconnect it first.
-			Termust never disconnects it for you.
+			An SSH session is still open. A restore is refused while one is running, so disconnect it
+			first. Termust never disconnects it for you.
 		</p>
 	{/if}
 {/if}

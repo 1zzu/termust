@@ -83,25 +83,34 @@
 		type Snippet,
 		type SnippetFormValues
 	} from '#lib/snippets';
+	import { snippetTarget, snippetTargetReady, type SnippetTarget } from '#lib/session-tabs';
 	import type { ConnectionStatus } from '#lib/types';
 	import type { VaultStatus } from '#lib/vault';
 
-	// The page owns the vault status and the session, so this panel is told when
-	// the vault opens or closes, which session is running (a second one would have
-	// to share the terminal the first one is using), and what that session is.
+	// The page owns the vault status and every session, so this panel is told when
+	// the vault opens or closes, which tab is on screen (the single-session parts
+	// of this panel follow that one), whether any session is still alive at all,
+	// and which saved hosts are already being connected.
 	let {
 		vaultStatus,
 		sessionStatus = 'idle',
 		sessionId,
-		sessionTarget = 'Quick Connect',
-		sessionBusy = false,
+		sessionTarget = '',
+		hasLiveSessions = false,
+		hostConnecting = () => false,
 		onconnect
 	}: {
 		vaultStatus: VaultStatus | undefined;
+		/** The status of the tab on screen. */
 		sessionStatus?: ConnectionStatus;
+		/** The id of the tab on screen, if there is one. */
 		sessionId?: string;
+		/** What that tab is called. */
 		sessionTarget?: string;
-		sessionBusy?: boolean;
+		/** Whether any tab is still talking to a host, closing included. */
+		hasLiveSessions?: boolean;
+		/** Whether a tab for this saved host is already being opened. */
+		hostConnecting?: (hostId: string) => boolean;
 		onconnect?: (host: Host) => void;
 	} = $props();
 
@@ -142,12 +151,20 @@
 	// The snippet a delete confirmation is about, and the preview a run waits on.
 	let snippetDeleteTarget = $state<Snippet | null>(null);
 	let runTarget = $state<Snippet | null>(null);
+	// The tab the open preview belongs to, recorded when it was opened. A later
+	// switch of the active tab can then never change where the command would go.
+	let runSession = $state<SnippetTarget | null>(null);
 	let running = $state(false);
 
 	const visible = $derived(inventoryVisible(vaultStatus));
 	// At most one run at a time, and only against a session that is really up.
 	// When a session ends while the preview is open, this turns false by itself.
 	const canRun = $derived(runEnabled(sessionStatus, sessionId, running));
+	// Whether the preview's own session may still take the command: it has to be
+	// the tab on screen, and it has to be up.
+	const canRunTarget = $derived(
+		snippetTargetReady(runSession, sessionId ?? null, sessionStatus, running)
+	);
 	// bits-ui reads a closed trigger's text from these, so a select shows a name
 	// instead of the raw id it actually stores.
 	const groupOptions = $derived([
@@ -233,6 +250,7 @@
 		snippetForm = emptySnippetForm();
 		snippetDeleteTarget = null;
 		runTarget = null;
+		runSession = null;
 		running = false;
 		errorText = '';
 	}
@@ -483,13 +501,24 @@
 		});
 	}
 
-	/** Opens the preview. Opening it runs nothing: only the confirm button does. */
+	/**
+	 * Opens the preview. Opening it runs nothing: only the confirm button does.
+	 *
+	 * The session is recorded here, so a tab switch cannot quietly aim the
+	 * confirmation at a different session than the one the dialog names.
+	 */
 	function openRunPreview(snippet: Snippet) {
 		runTarget = snippet;
+		runSession = snippetTarget(sessionId, sessionTarget);
+	}
+
+	function closeRunPreview() {
+		runTarget = null;
+		runSession = null;
 	}
 
 	/**
-	 * Sends the snippet the preview is showing to the session that is up.
+	 * Sends the snippet the preview is showing to the session it was opened for.
 	 *
 	 * A failure keeps the dialog open and is reported: the snippet is never
 	 * presented as having run when the backend refused it. Closing the dialog, on
@@ -497,13 +526,14 @@
 	 */
 	async function confirmRunSnippet() {
 		const target = runTarget;
-		if (!target || !canRun) return;
+		const bound = runSession;
+		if (!target || !bound || !canRunTarget) return;
 
 		running = true;
 		errorText = '';
 		try {
-			await runSnippet(runSnippetRequest(sessionId ?? '', target.id));
-			runTarget = null;
+			await runSnippet(runSnippetRequest(bound.sessionId, target.id));
+			closeRunPreview();
 		} catch (error) {
 			errorText = errorMessage(error);
 		} finally {
@@ -604,7 +634,7 @@
 										<Button
 											size="sm"
 											onclick={() => onconnect?.(host)}
-											disabled={busy || sessionBusy || !canConnectHost(host)}
+											disabled={busy || hostConnecting(host.id) || !canConnectHost(host)}
 										>
 											Connect
 										</Button>
@@ -782,7 +812,7 @@
 						into this vault or into another one with a different master password. It is not a sync:
 						restoring replaces every record in this vault with the ones in the file.
 					</p>
-					<BackupRestore {vaultStatus} {sessionBusy} onrestored={refresh} />
+					<BackupRestore {vaultStatus} {hasLiveSessions} onrestored={refresh} />
 				</div>
 			{:else}
 				<div class="grid gap-3">
@@ -1118,16 +1148,13 @@
 		</DialogContent>
 	</Dialog>
 
-	<Dialog
-		open={runTarget !== null}
-		onOpenChange={(open) => !open && !running && (runTarget = null)}
-	>
+	<Dialog open={runTarget !== null} onOpenChange={(open) => !open && !running && closeRunPreview()}>
 		<DialogContent class="sm:max-w-2xl">
 			<DialogHeader>
 				<DialogTitle>Run this snippet?</DialogTitle>
 				<DialogDescription>
-					This sends the command to the shell of {sessionTarget}. Termust does not read the command
-					itself, so check it here before it goes.
+					This sends the command to the shell of {runSession?.title ?? 'the tab it was opened for'}.
+					Termust does not read the command itself, so check it here before it goes.
 				</DialogDescription>
 			</DialogHeader>
 
@@ -1142,11 +1169,18 @@
 				</div>
 			{/if}
 
+			{#if runSession && !canRunTarget}
+				<Alert>
+					<AlertDescription>
+						This preview belongs to {runSession.title}. It is only ever sent to the session it was
+						confirmed for, so switch back to that tab to run it.
+					</AlertDescription>
+				</Alert>
+			{/if}
+
 			<DialogFooter>
-				<Button variant="outline" onclick={() => (runTarget = null)} disabled={running}>
-					Cancel
-				</Button>
-				<Button onclick={confirmRunSnippet} disabled={!canRun}>
+				<Button variant="outline" onclick={closeRunPreview} disabled={running}>Cancel</Button>
+				<Button onclick={confirmRunSnippet} disabled={!canRunTarget}>
 					{running ? 'Running…' : 'Run snippet'}
 				</Button>
 			</DialogFooter>

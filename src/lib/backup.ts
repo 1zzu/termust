@@ -260,12 +260,17 @@ export function restoreRequest(
 /**
  * Why a restore cannot be confirmed, or null when it can.
  *
- * An open session comes first: a restore replaces the records a session was
- * started from, so it is refused before anything else is considered.
+ * A live session comes first: a restore replaces the records sessions were
+ * started from, so it is refused before anything else is considered. Every
+ * session counts, not only the one on screen.
  */
-export function restoreProblem(typed: string, sessionBusy: boolean, busy: boolean): string | null {
-	if (sessionBusy) {
-		return 'Disconnect the SSH session before restoring a backup.';
+export function restoreProblem(
+	typed: string,
+	hasLiveSessions: boolean,
+	busy: boolean
+): string | null {
+	if (hasLiveSessions) {
+		return 'Disconnect every SSH session before restoring a backup.';
 	}
 	if (typed.trim() !== RESTORE_PHRASE) {
 		return `Type ${RESTORE_PHRASE} to confirm that this vault will be replaced.`;
@@ -277,8 +282,8 @@ export function restoreProblem(typed: string, sessionBusy: boolean, busy: boolea
 }
 
 /** Whether the restore button can be pressed. */
-export function restoreReady(typed: string, sessionBusy: boolean, busy: boolean): boolean {
-	return restoreProblem(typed, sessionBusy, busy) === null;
+export function restoreReady(typed: string, hasLiveSessions: boolean, busy: boolean): boolean {
+	return restoreProblem(typed, hasLiveSessions, busy) === null;
 }
 
 /**

@@ -7,34 +7,15 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 import { invoke } from '@tauri-apps/api/core';
 
 import {
-	belongsToSession,
 	decodeOutput,
 	errorMessage,
 	hostKeyPromise,
 	isConnected,
 	savedConnectRequest,
-	sessionLabel,
 	startSavedSsh,
 	statusLabel
 } from './ssh';
 import type { ConnectionStatus } from './types';
-
-describe('belongsToSession', () => {
-	it('accepts output meant for the same session', () => {
-		expect(belongsToSession({ sessionId: 'a', data: 'x' }, 'a')).toBe(true);
-	});
-
-	it('rejects output from another session so terminals cannot mix', () => {
-		expect(belongsToSession({ sessionId: 'b', data: 'x' }, 'a')).toBe(false);
-	});
-
-	it('rejects payloads that carry no session id', () => {
-		expect(belongsToSession({ data: 'x' }, 'a')).toBe(false);
-		expect(belongsToSession(null, 'a')).toBe(false);
-		expect(belongsToSession('a', 'a')).toBe(false);
-		expect(belongsToSession({ sessionId: 1 }, 'a')).toBe(false);
-	});
-});
 
 describe('decodeOutput', () => {
 	it('decodes plain ASCII bytes', () => {
@@ -143,13 +124,6 @@ describe('startSavedSsh', () => {
 		expect(vi.mocked(invoke).mock.calls[0][1]).toEqual({
 			request: { sessionId: 'session-1', hostId: 'host-1', cols: 120, rows: 40 }
 		});
-	});
-});
-
-describe('sessionLabel', () => {
-	it('names the saved host, or the ad-hoc form that started the session', () => {
-		expect(sessionLabel('Prod web')).toBe('Saved host: Prod web');
-		expect(sessionLabel(null)).toBe('Quick Connect');
 	});
 });
 

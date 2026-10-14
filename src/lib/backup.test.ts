@@ -289,14 +289,14 @@ describe('the commands', () => {
 });
 
 describe('restoreProblem', () => {
-	it('refuses a restore while a session is open, before anything else', () => {
+	it('refuses a restore while a session is live, before anything else', () => {
 		expect(restoreProblem(RESTORE_PHRASE, true, false)).toBe(
-			'Disconnect the SSH session before restoring a backup.'
+			'Disconnect every SSH session before restoring a backup.'
 		);
 		// Even a wrong phrase reports the session first: the session is the
 		// blocker the user has to clear.
 		expect(restoreProblem('nope', true, false)).toBe(
-			'Disconnect the SSH session before restoring a backup.'
+			'Disconnect every SSH session before restoring a backup.'
 		);
 	});
 

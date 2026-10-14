@@ -94,9 +94,13 @@ packaging, bukan kegagalan kode.
   pun, dan dapat dipulihkan secara atomik ke vault mana pun — termasuk vault dengan master password
   berbeda, karena setiap record dienkripsi ulang dengan Vault Key vault tujuan. Lihat bagian
   _Backup & Restore_.
+- **Multi-session terminal tabs (Phase 1F).** Beberapa sesi SSH berjalan bersamaan dalam satu window,
+  satu tab untuk setiap sesi, masing-masing dengan terminal, status, dan scrollback sendiri. Lihat
+  bagian _Multi-session terminal tabs_.
 - **Quick Connect.** Form koneksi langsung tanpa menyimpan host: host atau IP, port (default 22),
   username, pilihan autentikasi, dan kredensial sesuai pilihan. Form ini tetap terpisah dan tidak
-  memakai saved Host maupun saved Credential.
+  memakai saved Host maupun saved Credential. Setiap Connect membuka tab baru, sehingga beberapa
+  koneksi dapat berjalan sekaligus.
 - Autentikasi password dan private key (termasuk key terenkripsi lewat passphrase).
 - Verifikasi host key: fingerprint SHA-256 ditampilkan sebelum persetujuan pertama, dan
   host key tidak pernah diterima otomatis. Persetujuan disimpan di vault, jadi koneksi
@@ -104,8 +108,9 @@ packaging, bukan kegagalan kode.
   Host yang telanjur disetujui dan kemudian menyajikan key berbeda akan ditolak, bukan
   diganti diam-diam.
 - Terminal xterm.js dengan PTY jarak jauh, input keyboard, dan resize yang diteruskan ke
-  server.
-- Disconnect yang menutup channel, mengirim SSH disconnect, dan menghentikan task sesi.
+  server. Setiap tab memakai instance `Terminal`, `FitAddon`, dan container-nya sendiri.
+- Disconnect yang menutup channel, mengirim SSH disconnect, dan menghentikan task sesi tanpa
+  menghapus tabnya; tombol close pada tab menghentikan sesi tab itu saja.
 - Pesan error yang bisa ditindaklanjuti tanpa mengulang isi kredensial.
 
 ## Local vault (Phase 1A)
@@ -174,9 +179,10 @@ Host, bukan lewat dialog saat connect.
   memerlukan unlock ulang, dan tidak ada reconnect otomatis.
 - Sesi memakai lifecycle yang sama dengan Quick Connect, termasuk verifikasi host key Phase 1B2a
   (approval pertama, trust lintas restart, dan blokir saat key berubah).
-- Satu sesi dalam satu waktu: selama sesi berjalan atau sedang dibuka, tombol `Connect` lain dan
-  form Quick Connect tidak aktif. Label saved host yang sedang dipakai tampil di atas terminal,
-  bersama status koneksi.
+- Setiap klik `Connect` membuka tab baru, termasuk koneksi duplikat ke saved Host yang sama. Klik
+  ganda pada host yang sama diabaikan selama tab host itu masih connecting; setelah request-nya
+  diterima backend, koneksi berikutnya boleh dibuka. Kegagalan satu koneksi tidak memengaruhi tab
+  lain, dan label saved host menjadi title tabnya.
 
 ## Known hosts (Phase 1B2a)
 
@@ -312,9 +318,71 @@ Detail format, envelope, AAD, validasi snapshot, dan penanganan file ada di
 itu tidak akan bisa dibuka lagi kalau passwordnya hilang, dan backup bukan sync — restore mengganti,
 bukan menggabungkan.
 
+## Multi-session terminal tabs (Phase 1F)
+
+Beberapa sesi SSH dapat berjalan bersamaan dalam satu window, satu tab untuk setiap sesi. Backend
+sudah menyimpan sesinya di dalam map berdasarkan `sessionId` sebelum fase ini, jadi yang ditambahkan
+adalah state sesi yang eksplisit di frontend — bukan arsitektur backend yang baru.
+
+- **State sesi.** Satu daftar `TerminalSession` (`id`, `title`, `source`, `status`, `statusMessage`,
+  `errorMessage`, `hostKeyPrompt`, `disconnecting`, `closing`) plus satu `activeSessionId`. ID tab dibuat dengan
+  `crypto.randomUUID()`, urutan tab stabil, dan `activeSessionId` selalu `null` atau menunjuk tab
+  yang masih ada. Tidak ada descriptor yang menyimpan password, private key, passphrase, credential
+  id, atau secret lain — termasuk untuk tab dari saved Host. Fungsi state-nya murni dan berada di
+  `src/lib/session-tabs.ts`.
+- **Terminal per tab.** Setiap tab punya `Terminal`, `FitAddon`, container DOM, scrollback, input
+  handler, dan `ResizeObserver` sendiri, dimiliki oleh komponen tabnya
+  (`src/lib/components/terminal-session.svelte`). Berpindah tab hanya menyembunyikan terminal yang
+  tidak aktif, tidak pernah membuangnya, sehingga scrollback tetap ada dan output tetap masuk ke
+  terminal yang benar meskipun tabnya sedang tidak terlihat. `fit()` tidak pernah dijalankan pada
+  container tersembunyi yang berukuran nol, dan resize satu tab tidak pernah mengubah tab lain.
+  Koneksi baru dimulai setelah terminal tab itu siap **dan** keempat listener event sudah terpasang,
+  jadi event awal tidak hilang: bila salah satu listener gagal dipasang, semua listener dilepas
+  kembali dan tidak ada sesi yang dimulai sama sekali. Start sebuah tab bisa dibatalkan: tab yang
+  ditutup sebelum IPC tidak pernah memanggil backend, dan tab yang ditutup saat IPC berjalan
+  ditunggu sampai request-nya selesai sebelum diputus dan dihapus. Lifecycle ini ada di
+  `src/lib/session-start.ts` dan `src/lib/session-lifecycle.ts`.
+- **Routing memakai `sessionId` saja.** Keempat event yang sudah ada (`ssh://data`, `ssh://status`,
+  `ssh://error`, `ssh://host-key`) dipetakan hanya lewat `sessionId` yang dibawanya: bukan lewat
+  title, hostname, urutan tab, atau tab yang sedang aktif saat event datang. Output sesi A tidak
+  pernah masuk ke terminal B, status/error/prompt disimpan pada tab asalnya, dan event untuk tab yang
+  sudah ditutup diabaikan.
+- **Tab strip** di atas terminal memakai komponen shadcn-svelte yang sudah ada, dengan
+  `role="tablist"`, `role="tab"`, `role="tabpanel"`, tabindex roving, dan keyboard Arrow Left,
+  Arrow Right, Home, serta End. Setiap tab menampilkan status dot (connecting/checking host
+  key/authenticating, connected, disconnected, error), title, dan tombol close berlabel aksesibel;
+  stripnya bisa di-scroll horizontal dan tidak menambah tinggi window. Tidak ada custom title bar di
+  fase ini.
+- **Host-key prompt** disimpan pada tab asalnya. Prompt yang datang untuk tab yang tidak aktif
+  membawa tab itu ke depan (kecuali tab di layar sedang menampilkan prompt lain), dan jawabannya
+  selalu memakai `sessionId` milik prompt itu, bukan tab yang sedang aktif. Prompt yang datang
+  berdekatan semuanya tersimpan sampai dijawab.
+- **Disconnect dan close adalah dua tindakan berbeda.** Disconnect memanggil `disconnect_ssh` hanya
+  untuk tab aktif dan menandai tabnya `disconnecting` lebih dulu: input/resize tab itu berhenti,
+  tombol Disconnect mati, dan tab dihitung masih hidup sampai backend benar-benar selesai — jadi
+  restore tetap tidak mungkin dimulai di tengah proses. Setelah selesai, tab tetap ada beserta
+  scrollback-nya dan statusnya menjadi `disconnected`; bila IPC gagal, tandanya diambil kembali, tab
+  tetap hidup, dan error-nya ditampilkan agar bisa dicoba lagi. Close membatalkan start tab itu bila
+  masih berjalan, menunggu start tersebut selesai, baru menghentikan sesinya — dan hanya menghapus
+  tabnya setelah stop benar-benar berhasil. Tombol close pada tab lain tidak terpengaruh dan klik
+  close berulang diabaikan. Tab berikutnya yang aktif dipilih dari kanan pada posisi yang sama, lalu
+  kiri, dan `activeSessionId` menjadi `null` bila tidak ada tab tersisa. Saat window dibongkar,
+  seluruh start yang masih pending dibatalkan lebih dulu (tidak ada sesi baru yang lahir setelah
+  teardown dimulai), lalu seluruh sesi yang masih hidup diputus dengan best effort.
+- **Snippet** hanya berjalan pada tab aktif, dan dialog preview-nya mengikat `sessionId` serta title
+  saat dibuka: berpindah tab menonaktifkan tombol konfirmasi alih-alih diam-diam mengirim command ke
+  tab lain.
+- **Backup/restore** memakai `hasLiveSessions`, yang dihitung dari seluruh tab (connecting,
+  verifying_host_key, authenticating, connected, atau sedang closing), bukan hanya tab aktif. Restore
+  tetap ditolak backend selama satu sesi pun masih hidup; export tetap boleh kapan saja. ID sesi yang
+  masih terpakai ditolak backend, bukan diganti, sehingga satu ID tidak pernah menunjuk dua sesi.
+- **Yang belum ada di fase ini:** split pane, tab drag-and-drop, tab pinning, tab groups, broadcast
+  input, duplicate session, SSH multiplexing, reconnect otomatis, dan session persistence. Tab tidak
+  dipulihkan setelah aplikasi di-restart, dan restore terminal scrollback belum ada.
+
 ## Yang sengaja belum dibuat
 
-Multi-tab atau multi-sesi terminal, split pane, reconnect otomatis, session restore, auto-run
+split pane, tab drag-and-drop, tab pinning, tab groups, broadcast input, reconnect otomatis, session restore, auto-run
 command, SSH agent, certificate, keyboard-interactive, credential prompt fallback, parser OpenSSH
 lengkap (`Match`, `Include`, wildcard, `Host *` default, multiple alias per block), import
 `IdentityFile` atau private key dari config, import `known_hosts` OpenSSH, wildcard host, jump host,
@@ -324,7 +392,8 @@ cloud backup, backup otomatis atau terjadwal, incremental backup, merge restore,
 per-object restore, unencrypted export, dan export ke OpenSSH config,
 auto-lock timer, keychain/biometric unlock, recovery key, sinkronisasi,
 enkripsi E2EE lintas perangkat, akun, backend Axum/self-hosted, web SSH relay, mobile UI, tim dan
-RBAC, plugin, serta auto-update. Satu sesi per window adalah batas fase ini.
+RBAC, plugin, serta auto-update. Beberapa sesi dapat berjalan bersamaan, tetapi tab tidak dipulihkan
+setelah aplikasi ditutup, dan reconnect otomatis belum ada.
 
 ## Pengujian
 
@@ -365,6 +434,33 @@ passphrase, address, atau credential id, dan bahwa `run_snippet` hanya menerima 
 `snippetId`: payload yang mencoba membawa `content`, `command`, atau field lain ditolak, bukan
 diabaikan.
 
+State tab multi-sesi diuji sebagai fungsi murni di `src/lib/session-tabs.test.ts`: dua tab
+menghasilkan dua session ID, perpindahan tab tidak menghapus tab lain, event dirutekan berdasarkan
+session ID, output satu sesi tidak masuk ke terminal lain, status/error/host-key prompt satu tab
+tidak mengubah tab lain, pemilihan tab setelah close (kanan lalu kiri, dan `null`), disconnect yang
+mempertahankan tab, tab disconnected yang tidak lagi mengirim input atau resize, `hasLiveSessions`
+yang melihat seluruh tab, snippet yang terikat pada session ID saat preview dibuka, descriptor tab
+yang tidak memuat credential, request saved Host yang tetap hanya membawa empat field, cleanup yang
+memutus seluruh sesi hidup, dan event terlambat untuk tab yang sudah ditutup. `session-start.test.ts`
+menguji lifecycle satu start (queued/invoking/finished, cancellation sebelum IPC, dan pelepasan plan
+beserta kredensialnya: plan dipegang satu binding milik start, objek dependency-nya tidak pernah
+membawa plan, callback penutupnya hanya menerima `sessionId`, dan plan tetap tidak terbaca lagi
+setelah start selesai — sukses, gagal, atau dibatalkan), sedangkan `session-lifecycle.test.ts`
+menguji urutannya: tidak ada start
+sebelum listener lengkap, listener yang gagal melepas listener parsial dan tidak memulai backend,
+close sebelum listener siap tidak memanggil backend, close saat IPC berjalan menunggu start lalu
+disconnect lalu menghapus tab, close yang gagal menghentikan sesi mempertahankan tabnya, disconnect
+yang sedang berjalan tetap dihitung hidup dan tidak menerima input, serta teardown yang membatalkan
+seluruh pending start. Semuanya deterministik, memakai channel dan dependency injection, tanpa timer
+sebagai sinkronisasi. Di sisi Rust, `ssh::tests` membuktikan dua sesi dapat diregistrasi bersamaan,
+input/resize/jawaban host key hanya sampai ke sesi yang dituju, disconnect satu sesi tidak mengganggu
+sesi lain, ID sesi yang masih terpakai ditolak alih-alih diganti, dan restore guard baru dapat
+diambil setelah seluruh sesi selesai. Untuk lifecycle stop, `ssh::tests` juga membuktikan sesi yang
+sedang stopping tetap menolak restore guard dan tidak bisa dipakai ulang ID-nya sampai task-nya
+benar-benar selesai, penanda stopping dilepas pada jalur graceful maupun abort, task yang selesai
+sangat cepat tidak meninggalkan sesi basi, dan task yang selesai terlambat tidak bisa menghapus sesi
+yang lebih baru.
+
 ### Live test terhadap server SSH sungguhan
 
 Test di `src-tauri/src/ssh/live.rs` benar-benar membuka koneksi SSH: password, private key,
@@ -385,7 +481,10 @@ Credential, Host, Known host hasil approval, Snippet), mengekspor backup sambil 
 terbuka, membuktikan restore **ditolak** selama session itu hidup, memutusnya, memulihkan backup ke
 vault kedua dengan master password berbeda, memastikan vault itu tetap hanya terbuka dengan password
 miliknya, lalu membuka session lewat Host hasil restore tanpa prompt host key dan menjalankan Snippet
-hasil restore di shell sungguhan.
+hasil restore di shell sungguhan. Untuk Phase 1F, `live_two_sessions_stay_independent` membuka dua
+shell SSH nyata secara bersamaan, mengirim marker berbeda ke masing-masing, membuktikan output tidak
+tertukar, memutus sesi pertama, lalu memastikan sesi kedua masih menjalankan command sebelum ditutup
+dengan bersih.
 Semuanya diabaikan secara default dan hanya berjalan bila diminta:
 
 ```sh

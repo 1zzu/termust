@@ -42,14 +42,6 @@ export function savedConnectRequest(
 	return { sessionId, hostId, cols, rows };
 }
 
-/**
- * What the strip above the terminal says about the session on screen: a saved
- * host by name, or the ad-hoc form that started it.
- */
-export function sessionLabel(savedHostLabel: string | null): string {
-	return savedHostLabel === null ? 'Quick Connect' : `Saved host: ${savedHostLabel}`;
-}
-
 export function respondHostKey(sessionId: string, accepted: boolean): Promise<void> {
 	return invoke('respond_host_key', { sessionId, accepted });
 }
@@ -58,18 +50,10 @@ export function disconnectSsh(sessionId: string): Promise<void> {
 	return invoke('disconnect_ssh', { sessionId });
 }
 
-/**
- * Every payload carries its session id, because a window can hold several
- * sessions and no terminal may ever show another session's output.
- */
-export function belongsToSession(payload: unknown, sessionId: string): boolean {
-	return (
-		typeof payload === 'object' &&
-		payload !== null &&
-		'sessionId' in payload &&
-		(payload as { sessionId: unknown }).sessionId === sessionId
-	);
-}
+// Every payload carries its session id, because a window can hold several
+// sessions and no terminal may ever show another session's output. Finding the
+// session a payload belongs to needs the list of open tabs, so that lives with
+// them, in `session-tabs.ts`.
 
 /**
  * Rust sends terminal bytes as base64. Decoding to bytes instead of text lets

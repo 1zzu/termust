@@ -262,6 +262,105 @@ async fn live_password_authentication_opens_a_shell() {
 
 #[tokio::test]
 #[ignore = "needs a real SSH server; see the module comment"]
+async fn live_two_sessions_stay_independent() {
+    let Some(server) = LiveServer::from_env() else {
+        eprintln!("skipping: set TERMUST_LIVE_HOST and TERMUST_LIVE_USER to run the live tests");
+        return;
+    };
+    let Ok(password) = std::env::var("TERMUST_LIVE_PASSWORD") else {
+        eprintln!("skipping: TERMUST_LIVE_PASSWORD is not set");
+        return;
+    };
+
+    let mut first = RunningSession::start(
+        named_password_request(&server, "live-first", &password),
+        HashMap::new(),
+    );
+    let mut second = RunningSession::start(
+        named_password_request(&server, "live-second", &password),
+        HashMap::new(),
+    );
+
+    // Each connection asks about the host key on its own, and each answer
+    // belongs to the session that was asked.
+    for session in [&mut first, &mut second] {
+        assert!(
+            session
+                .saw(|events| host_key_prompt(events).is_some())
+                .await,
+            "no host key prompt arrived: {:?}",
+            session.log()
+        );
+        session.answer_host_key(true);
+    }
+
+    for (session, name) in [(&first, "first"), (&second, "second")] {
+        assert!(
+            session
+                .saw(|events| status_reached(events, "connected"))
+                .await,
+            "the {name} session never reached a shell: {:?}",
+            session.log()
+        );
+    }
+
+    // A marker each, then the same command again later on the survivor.
+    first
+        .send(Command::Input(b"echo termust-first-session\n".to_vec()))
+        .await;
+    second
+        .send(Command::Input(b"echo termust-second-session\n".to_vec()))
+        .await;
+
+    assert!(
+        first
+            .saw(|events| terminal_text(events).contains("termust-first-session"))
+            .await,
+        "the first shell never echoed its marker: {:?}",
+        first.log()
+    );
+    assert!(
+        second
+            .saw(|events| terminal_text(events).contains("termust-second-session"))
+            .await,
+        "the second shell never echoed its marker: {:?}",
+        second.log()
+    );
+
+    // Neither session ever saw the other's output.
+    let first_text = terminal_text(&first.log());
+    let second_text = terminal_text(&second.log());
+    assert!(
+        !first_text.contains("termust-second-session"),
+        "the first session received the second one's output: {first_text}"
+    );
+    assert!(
+        !second_text.contains("termust-first-session"),
+        "the second session received the first one's output: {second_text}"
+    );
+
+    // Stopping one session leaves the other one running.
+    let outcome = first.shutdown().await;
+    assert!(outcome.is_ok(), "the first session failed: {outcome:?}");
+
+    second
+        .send(Command::Input(b"echo termust-second-still-up\n".to_vec()))
+        .await;
+    assert!(
+        second
+            .saw(|events| terminal_text(events).contains("termust-second-still-up"))
+            .await,
+        "the second session stopped working when the first one closed: {:?}",
+        second.log()
+    );
+
+    let outcome = second.shutdown().await;
+    assert!(outcome.is_ok(), "the second session failed: {outcome:?}");
+    assert_no_error_event(second.log());
+}
+
+#[tokio::test]
+#[ignore = "needs a real SSH server; see the module comment"]
 async fn live_private_key_authentication_opens_a_shell() {
     let Some(server) = LiveServer::from_env() else {
         eprintln!("skipping: set TERMUST_LIVE_HOST and TERMUST_LIVE_USER to run the live tests");
@@ -588,14 +687,15 @@ fn forwarding_session(session_id: &str, target: mpsc::Sender<Command>) -> SshSta
             }
         }
     });
-    ssh.register(
-        session_id,
-        super::Session {
-            commands,
-            host_key_decision: None,
-            task: None,
-        },
-    )
+    // Registered the way a real session is, so the app's input path is the one
+    // under test; the forwarding task is not a session task, so `stop` finds
+    // nothing to wait for and gives the id back right away.
+    ssh.launch(session_id, |generation| super::Session {
+        commands,
+        host_key_decision: None,
+        task: None,
+        generation,
+    })
     .expect("no restore is in progress");
     ssh
 }
@@ -1504,6 +1604,14 @@ fn password_request(server: &LiveServer, password: String) -> ConnectRequest {
         private_key: None,
         passphrase: None,
     }
+}
+
+/// The password request, under a session id of its own, for the tests that run
+/// more than one session at a time.
+fn named_password_request(server: &LiveServer, session_id: &str, password: &str) -> ConnectRequest {
+    let mut request = password_request(server, password.to_string());
+    request.session_id = session_id.to_string();
+    request
 }
 
 fn private_key_request(
