@@ -1,0 +1,10 @@
+# Build output and generated files
+node_modules
+build
+.svelte-kit
+src-tauri/target
+src-tauri/gen
+
+# Lockfiles and the product document are not ours to reformat
+package-lock.json
+PRD.md
