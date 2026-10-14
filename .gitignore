@@ -26,6 +26,8 @@ Thumbs.db
 
 # Local cache & tooling
 .freebuff/
+PRD.md
+*.prd.md
 
 # Logs
 *.log
