@@ -1,9 +1,18 @@
 <script lang="ts">
 	import type { CredentialSummary, Group, Host } from '#lib/inventory';
+	import type { AuthMethod } from '#lib/types';
 	import type { VaultStatus } from '#lib/vault';
 	import { ALL_GROUPS_FILTER, UNGROUPED_FILTER, filterHosts } from './host-filter';
+	import {
+		closeContext,
+		pruneContextAfterFilter,
+		selectHostContext,
+		toggleQuickConnectContext,
+		type InventoryContext
+	} from './context-state';
 	import HostGrid from './host-grid.svelte';
 	import HostDetailPanel from './host-detail-panel.svelte';
+	import QuickConnectPanel from './quick-connect-panel.svelte';
 	import ImportOpensshDialog from '#lib/components/import-openssh-dialog.svelte';
 	import { Button } from '#lib/components/ui/button';
 	import { Input } from '#lib/components/ui/input';
@@ -16,6 +25,7 @@
 	} from '#lib/components/ui/select';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import SearchIcon from '@lucide/svelte/icons/search';
+	import ZapIcon from '@lucide/svelte/icons/zap';
 
 	let {
 		hosts,
@@ -28,7 +38,17 @@
 		onedit,
 		ondelete,
 		oncreate,
-		onimported
+		onimported,
+		quickHost = $bindable('localhost'),
+		quickPort = $bindable(22),
+		quickUsername = $bindable(''),
+		quickAuth = $bindable<AuthMethod>('password'),
+		quickPassword = $bindable(''),
+		quickPrivateKey = $bindable(''),
+		quickPassphrase = $bindable(''),
+		quickSubmitting = false,
+		onquicksubmit,
+		onquickclear
 	}: {
 		hosts: Host[];
 		groups: Group[];
@@ -41,11 +61,21 @@
 		ondelete: (host: Host) => void;
 		oncreate: () => void;
 		onimported: () => void;
+		quickHost?: string;
+		quickPort?: number;
+		quickUsername?: string;
+		quickAuth?: AuthMethod;
+		quickPassword?: string;
+		quickPrivateKey?: string;
+		quickPassphrase?: string;
+		quickSubmitting?: boolean;
+		onquicksubmit?: (event: SubmitEvent) => void;
+		onquickclear?: () => void;
 	} = $props();
 
 	let searchQuery = $state('');
 	let selectedGroupId = $state<string>(ALL_GROUPS_FILTER);
-	let selectedHostId = $state<string | null>(null);
+	let contextState = $state<InventoryContext>(null);
 
 	const groupFilterOptions = $derived([
 		{ value: ALL_GROUPS_FILTER, label: 'All groups' },
@@ -71,14 +101,17 @@
 		}
 	});
 
-	// If selected host is no longer in filtered results (e.g. search, group filter change, deletion, refresh), clear selection
+	// If selected host is no longer in filtered results, prune context
 	$effect(() => {
-		if (selectedHostId !== null && !filteredHosts.some((h) => h.id === selectedHostId)) {
-			selectedHostId = null;
-		}
+		const visibleIds = filteredHosts.map((h) => h.id);
+		contextState = pruneContextAfterFilter(contextState, visibleIds);
 	});
 
-	const selectedHost = $derived(filteredHosts.find((h) => h.id === selectedHostId) ?? null);
+	const selectedHostId = $derived(contextState?.kind === 'host' ? contextState.hostId : null);
+
+	const selectedHost = $derived(
+		selectedHostId ? (filteredHosts.find((h) => h.id === selectedHostId) ?? null) : null
+	);
 
 	const selectedHostGroup = $derived(
 		selectedHost?.groupId
@@ -92,44 +125,66 @@
 			: null
 	);
 
+	function handleSelectHost(host: Host) {
+		if (contextState?.kind === 'quick-connect') {
+			onquickclear?.();
+		}
+		contextState = selectHostContext(host.id);
+	}
+
+	function handleToggleQuickConnect() {
+		const next = toggleQuickConnectContext(contextState);
+		if (contextState?.kind === 'quick-connect' && next === null) {
+			onquickclear?.();
+		}
+		contextState = next;
+	}
+
+	function handleCloseDetail() {
+		contextState = closeContext();
+	}
+
+	function handleCloseQuickConnect() {
+		contextState = closeContext();
+		onquickclear?.();
+	}
+
 	function handleDelete(host: Host) {
-		selectedHostId = null;
+		contextState = closeContext();
 		ondelete(host);
 	}
 </script>
 
 <div class="flex flex-col gap-4">
-	<!-- Hosts Toolbar -->
-	<div
-		class="flex flex-col gap-3 rounded-lg border border-border/60 bg-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between"
-	>
-		<div class="flex items-center gap-2.5">
-			<h3 class="text-sm font-semibold tracking-tight text-foreground">Hosts</h3>
+	<!-- Hosts Toolbar: seamless directly in workspace, no outer card box -->
+	<div class="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
+		<!-- Search: primary control with largest space -->
+		<div class="relative min-w-[200px] flex-1">
+			<SearchIcon
+				class="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
+			/>
+			<Input
+				type="search"
+				placeholder="Search hosts…"
+				bind:value={searchQuery}
+				class="h-8 pl-8 text-xs"
+				aria-label="Search hosts"
+			/>
+		</div>
+
+		<!-- Actions row: Filter, Quick Connect, Import OpenSSH, New Host -->
+		<div class="flex flex-wrap items-center gap-2">
+			<!-- Host count badge -->
 			<span
-				class="rounded-full border border-border/80 bg-muted/60 px-2 py-0.5 font-mono text-[11px] text-muted-foreground"
+				class="rounded border border-border/70 bg-muted/50 px-2 py-0.5 font-mono text-[11px] text-muted-foreground"
+				title="Host count"
 			>
 				{#if searchQuery.trim() !== '' || selectedGroupId !== ALL_GROUPS_FILTER}
-					{filteredHosts.length} of {hosts.length}
+					{filteredHosts.length} / {hosts.length}
 				{:else}
 					{hosts.length}
 				{/if}
 			</span>
-		</div>
-
-		<div class="flex flex-wrap items-center gap-2">
-			<!-- Search input -->
-			<div class="relative max-w-xs min-w-[150px] flex-1">
-				<SearchIcon
-					class="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
-				/>
-				<Input
-					type="search"
-					placeholder="Search hosts…"
-					bind:value={searchQuery}
-					class="h-8 pl-8 text-xs"
-					aria-label="Search hosts"
-				/>
-			</div>
 
 			<!-- Group filter -->
 			<Select type="single" bind:value={selectedGroupId} items={groupFilterOptions} disabled={busy}>
@@ -145,18 +200,29 @@
 				</SelectContent>
 			</Select>
 
-			<!-- Action buttons -->
-			<div class="flex shrink-0 items-center gap-2">
-				<ImportOpensshDialog {vaultStatus} {onimported} />
-				<Button size="sm" class="h-8 text-xs" onclick={oncreate} disabled={busy}>
-					<PlusIcon data-icon="inline-start" />
-					New host
-				</Button>
-			</div>
+			<!-- Quick Connect button -->
+			<Button
+				variant={contextState?.kind === 'quick-connect' ? 'default' : 'outline'}
+				size="sm"
+				class="h-8 text-xs"
+				onclick={handleToggleQuickConnect}
+			>
+				<ZapIcon data-icon="inline-start" />
+				Quick Connect
+			</Button>
+
+			<!-- Import OpenSSH -->
+			<ImportOpensshDialog {vaultStatus} {onimported} />
+
+			<!-- New Host -->
+			<Button size="sm" class="h-8 text-xs" onclick={oncreate} disabled={busy}>
+				<PlusIcon data-icon="inline-start" />
+				New host
+			</Button>
 		</div>
 	</div>
 
-	<!-- Workspace Content: Grid + Detail Context Panel -->
+	<!-- Workspace Content: Grid + Unified Right Context Panel -->
 	<div class="flex flex-col gap-4 lg:flex-row lg:items-start">
 		<div class="min-w-0 flex-1">
 			<HostGrid
@@ -167,12 +233,12 @@
 				{selectedHostId}
 				{busy}
 				{hostConnecting}
-				onselect={(host) => (selectedHostId = host.id)}
+				onselect={handleSelectHost}
 				{onconnect}
 			/>
 		</div>
 
-		{#if selectedHost}
+		{#if contextState?.kind === 'host' && selectedHost}
 			<HostDetailPanel
 				host={selectedHost}
 				groupName={selectedHostGroup}
@@ -182,7 +248,20 @@
 				{onconnect}
 				{onedit}
 				ondelete={handleDelete}
-				onclose={() => (selectedHostId = null)}
+				onclose={handleCloseDetail}
+			/>
+		{:else if contextState?.kind === 'quick-connect'}
+			<QuickConnectPanel
+				bind:host={quickHost}
+				bind:port={quickPort}
+				bind:username={quickUsername}
+				bind:auth={quickAuth}
+				bind:password={quickPassword}
+				bind:privateKey={quickPrivateKey}
+				bind:passphrase={quickPassphrase}
+				submitting={quickSubmitting}
+				onsubmit={(e) => onquicksubmit?.(e)}
+				onclose={handleCloseQuickConnect}
 			/>
 		{/if}
 	</div>

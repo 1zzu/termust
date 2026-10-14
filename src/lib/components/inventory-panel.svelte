@@ -1,13 +1,7 @@
 <script lang="ts">
 	import { Alert, AlertDescription, AlertTitle } from '#lib/components/ui/alert';
 	import { Button } from '#lib/components/ui/button';
-	import {
-		Card,
-		CardContent,
-		CardDescription,
-		CardHeader,
-		CardTitle
-	} from '#lib/components/ui/card';
+	import { Card, CardContent } from '#lib/components/ui/card';
 	import {
 		Dialog,
 		DialogContent,
@@ -82,7 +76,7 @@
 		type SnippetFormValues
 	} from '#lib/snippets';
 	import { snippetTarget, snippetTargetReady, type SnippetTarget } from '#lib/session-tabs';
-	import type { ConnectionStatus } from '#lib/types';
+	import type { AuthMethod, ConnectionStatus } from '#lib/types';
 	import type { VaultStatus } from '#lib/vault';
 
 	// The page owns the vault status and every session, so this panel is told when
@@ -96,7 +90,17 @@
 		sessionTarget = '',
 		hasLiveSessions = false,
 		hostConnecting = () => false,
-		onconnect
+		onconnect,
+		quickHost = $bindable('localhost'),
+		quickPort = $bindable(22),
+		quickUsername = $bindable(''),
+		quickAuth = $bindable<AuthMethod>('password'),
+		quickPassword = $bindable(''),
+		quickPrivateKey = $bindable(''),
+		quickPassphrase = $bindable(''),
+		quickSubmitting = false,
+		onquicksubmit,
+		onquickclear
 	}: {
 		vaultStatus: VaultStatus | undefined;
 		/** The status of the tab on screen. */
@@ -110,6 +114,16 @@
 		/** Whether a tab for this saved host is already being opened. */
 		hostConnecting?: (hostId: string) => boolean;
 		onconnect?: (host: Host) => void;
+		quickHost?: string;
+		quickPort?: number;
+		quickUsername?: string;
+		quickAuth?: AuthMethod;
+		quickPassword?: string;
+		quickPrivateKey?: string;
+		quickPassphrase?: string;
+		quickSubmitting?: boolean;
+		onquicksubmit?: (event: SubmitEvent) => void;
+		onquickclear?: () => void;
 	} = $props();
 
 	let section = $state<'hosts' | 'credentials' | 'groups' | 'known_hosts' | 'snippets' | 'backup'>(
@@ -204,6 +218,9 @@
 
 	/** Switching sections re-reads, so a key approved since the vault opened shows up. */
 	function show(next: typeof section) {
+		if (section === 'hosts' && next !== 'hosts') {
+			onquickclear?.();
+		}
 		section = next;
 		void refresh();
 	}
@@ -251,6 +268,7 @@
 		runSession = null;
 		running = false;
 		errorText = '';
+		onquickclear?.();
 	}
 
 	// --- hosts ---
@@ -523,275 +541,291 @@
 </script>
 
 {#if visible}
-	<Card>
-		<CardHeader>
-			<CardTitle>Saved inventory</CardTitle>
-			<CardDescription>
-				Decrypted from the local vault while it is unlocked. Credential secrets are never shown
-				again after they are saved.
-			</CardDescription>
-		</CardHeader>
-		<CardContent class="grid gap-4">
-			<div class="flex flex-wrap gap-2">
-				<Button
-					size="sm"
-					variant={section === 'hosts' ? 'default' : 'outline'}
-					onclick={() => show('hosts')}
-				>
-					Hosts ({hosts.length})
-				</Button>
-				<Button
-					size="sm"
-					variant={section === 'credentials' ? 'default' : 'outline'}
-					onclick={() => show('credentials')}
-				>
-					Credentials ({credentials.length})
-				</Button>
-				<Button
-					size="sm"
-					variant={section === 'groups' ? 'default' : 'outline'}
-					onclick={() => show('groups')}
-				>
-					Groups ({groups.length})
-				</Button>
-				<Button
-					size="sm"
-					variant={section === 'known_hosts' ? 'default' : 'outline'}
-					onclick={() => show('known_hosts')}
-				>
-					Known hosts ({knownHosts.length})
-				</Button>
-				<Button
-					size="sm"
-					variant={section === 'snippets' ? 'default' : 'outline'}
-					onclick={() => show('snippets')}
-				>
-					Snippets ({snippets.length})
-				</Button>
-				<Button
-					size="sm"
-					variant={section === 'backup' ? 'default' : 'outline'}
-					onclick={() => show('backup')}
-				>
-					Backup &amp; Restore
-				</Button>
-			</div>
+	<div class="flex flex-col gap-4">
+		<!-- Compact section navigation bar -->
+		<div class="flex items-center gap-1.5 overflow-x-auto border-b border-border/60 pb-2">
+			<Button
+				size="sm"
+				variant={section === 'hosts' ? 'default' : 'ghost'}
+				class="h-7 text-xs"
+				onclick={() => show('hosts')}
+			>
+				Hosts ({hosts.length})
+			</Button>
+			<Button
+				size="sm"
+				variant={section === 'credentials' ? 'default' : 'ghost'}
+				class="h-7 text-xs"
+				onclick={() => show('credentials')}
+			>
+				Credentials ({credentials.length})
+			</Button>
+			<Button
+				size="sm"
+				variant={section === 'groups' ? 'default' : 'ghost'}
+				class="h-7 text-xs"
+				onclick={() => show('groups')}
+			>
+				Groups ({groups.length})
+			</Button>
+			<Button
+				size="sm"
+				variant={section === 'known_hosts' ? 'default' : 'ghost'}
+				class="h-7 text-xs"
+				onclick={() => show('known_hosts')}
+			>
+				Known hosts ({knownHosts.length})
+			</Button>
+			<Button
+				size="sm"
+				variant={section === 'snippets' ? 'default' : 'ghost'}
+				class="h-7 text-xs"
+				onclick={() => show('snippets')}
+			>
+				Snippets ({snippets.length})
+			</Button>
+			<Button
+				size="sm"
+				variant={section === 'backup' ? 'default' : 'ghost'}
+				class="h-7 text-xs"
+				onclick={() => show('backup')}
+			>
+				Backup &amp; Restore
+			</Button>
+		</div>
 
-			{#if errorText}
-				<Alert variant="destructive">
-					<AlertTitle>Inventory error</AlertTitle>
-					<AlertDescription>{errorText}</AlertDescription>
-				</Alert>
-			{/if}
+		{#if errorText}
+			<Alert variant="destructive">
+				<AlertTitle>Inventory error</AlertTitle>
+				<AlertDescription>{errorText}</AlertDescription>
+			</Alert>
+		{/if}
 
-			{#if section === 'hosts'}
-				<HostWorkspace
-					{hosts}
-					{groups}
-					{credentials}
-					{busy}
-					{vaultStatus}
-					{hostConnecting}
-					onconnect={(host) => onconnect?.(host)}
-					onedit={openEditHost}
-					ondelete={removeHost}
-					oncreate={openCreateHost}
-					onimported={refresh}
-				/>
-			{:else if section === 'credentials'}
-				<div class="grid gap-3">
-					<div class="flex items-center justify-between">
-						<h3 class="text-sm font-medium">Credentials</h3>
-						<Button size="sm" onclick={openCreateCredential} disabled={busy}>New credential</Button>
-					</div>
-					{#if credentials.length === 0}
-						<p class="text-xs text-muted-foreground">No saved credentials yet.</p>
+		{#if section === 'hosts'}
+			<HostWorkspace
+				{hosts}
+				{groups}
+				{credentials}
+				{busy}
+				{vaultStatus}
+				{hostConnecting}
+				onconnect={(host) => onconnect?.(host)}
+				onedit={openEditHost}
+				ondelete={removeHost}
+				oncreate={openCreateHost}
+				onimported={refresh}
+				bind:quickHost
+				bind:quickPort
+				bind:quickUsername
+				bind:quickAuth
+				bind:quickPassword
+				bind:quickPrivateKey
+				bind:quickPassphrase
+				{quickSubmitting}
+				{onquicksubmit}
+				{onquickclear}
+			/>
+		{:else}
+			<Card>
+				<CardContent class="grid gap-4 pt-6">
+					{#if section === 'credentials'}
+						<div class="grid gap-3">
+							<div class="flex items-center justify-between">
+								<h3 class="text-sm font-medium">Credentials</h3>
+								<Button size="sm" onclick={openCreateCredential} disabled={busy}
+									>New credential</Button
+								>
+							</div>
+							{#if credentials.length === 0}
+								<p class="text-xs text-muted-foreground">No saved credentials yet.</p>
+							{:else}
+								<ul class="grid gap-2">
+									{#each credentials as credential (credential.id)}
+										<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
+											<div class="min-w-0">
+												<p class="truncate text-sm font-medium">{credential.name}</p>
+												<p class="truncate text-xs text-muted-foreground">
+													{credential.kind === 'password' ? 'Password' : 'Private key'}
+												</p>
+											</div>
+											<div class="flex shrink-0 gap-2">
+												<Button
+													variant="outline"
+													size="sm"
+													onclick={() => openRenameCredential(credential)}
+													disabled={busy}
+												>
+													Rename
+												</Button>
+												<Button
+													variant="outline"
+													size="sm"
+													onclick={() => openReplaceSecret(credential)}
+													disabled={busy}
+												>
+													Replace secret
+												</Button>
+												<Button
+													variant="outline"
+													size="sm"
+													onclick={() => removeCredential(credential)}
+													disabled={busy}
+												>
+													Delete
+												</Button>
+											</div>
+										</li>
+									{/each}
+								</ul>
+							{/if}
+						</div>
+					{:else if section === 'snippets'}
+						<div class="grid gap-3">
+							<div class="flex items-center justify-between">
+								<h3 class="text-sm font-medium">Snippets</h3>
+								<Button size="sm" onclick={openCreateSnippet} disabled={busy}>New snippet</Button>
+							</div>
+							<p class="text-xs text-muted-foreground">
+								Commands kept encrypted in this vault. One is only ever sent to the session that is
+								already open, after you have read it in full and confirmed. {SNIPPET_SECRET_NOTE}
+							</p>
+							{#if snippets.length === 0}
+								<p class="text-xs text-muted-foreground">No snippets yet.</p>
+							{:else}
+								<ul class="grid gap-2">
+									{#each snippets as snippet (snippet.id)}
+										<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
+											<div class="min-w-0">
+												<p class="truncate text-sm font-medium">{snippet.name}</p>
+												<p class="truncate font-mono text-xs text-muted-foreground">
+													{snippetPreview(snippet.content)}
+												</p>
+												<p class="truncate text-xs text-muted-foreground">
+													updated {addedAt(snippet.updatedAt)}
+												</p>
+											</div>
+											<div class="flex shrink-0 gap-2">
+												<Button
+													size="sm"
+													onclick={() => openRunPreview(snippet)}
+													disabled={busy || !canRun}
+													title={canRun
+														? 'Read this command before it is sent'
+														: 'Connect a session first'}
+												>
+													Run
+												</Button>
+												<Button
+													variant="outline"
+													size="sm"
+													onclick={() => openEditSnippet(snippet)}
+													disabled={busy}
+												>
+													Edit
+												</Button>
+												<Button
+													variant="outline"
+													size="sm"
+													onclick={() => (snippetDeleteTarget = snippet)}
+													disabled={busy}
+												>
+													Delete
+												</Button>
+											</div>
+										</li>
+									{/each}
+								</ul>
+							{/if}
+						</div>
+					{:else if section === 'groups'}
+						<div class="grid gap-3">
+							<div class="flex items-center justify-between">
+								<h3 class="text-sm font-medium">Groups</h3>
+								<Button size="sm" onclick={openCreateGroup} disabled={busy}>New group</Button>
+							</div>
+							{#if groups.length === 0}
+								<p class="text-xs text-muted-foreground">No groups yet.</p>
+							{:else}
+								<ul class="grid gap-2">
+									{#each groups as group (group.id)}
+										<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
+											<p class="truncate text-sm font-medium">{group.name}</p>
+											<div class="flex shrink-0 gap-2">
+												<Button
+													variant="outline"
+													size="sm"
+													onclick={() => openRenameGroup(group)}
+													disabled={busy}
+												>
+													Rename
+												</Button>
+												<Button
+													variant="outline"
+													size="sm"
+													onclick={() => removeGroup(group)}
+													disabled={busy}
+												>
+													Delete
+												</Button>
+											</div>
+										</li>
+									{/each}
+								</ul>
+							{/if}
+						</div>
+					{:else if section === 'backup'}
+						<div class="grid gap-3">
+							<h3 class="text-sm font-medium">Backup &amp; Restore</h3>
+							<p class="text-xs text-muted-foreground">
+								A backup is one encrypted file, locked with a password you choose for it. It holds
+								every group, host, credential, known host and snippet in this vault, and it can be
+								restored into this vault or into another one with a different master password. It is
+								not a sync: restoring replaces every record in this vault with the ones in the file.
+							</p>
+							<BackupRestore {vaultStatus} {hasLiveSessions} onrestored={refresh} />
+						</div>
 					{:else}
-						<ul class="grid gap-2">
-							{#each credentials as credential (credential.id)}
-								<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
-									<div class="min-w-0">
-										<p class="truncate text-sm font-medium">{credential.name}</p>
-										<p class="truncate text-xs text-muted-foreground">
-											{credential.kind === 'password' ? 'Password' : 'Private key'}
-										</p>
-									</div>
-									<div class="flex shrink-0 gap-2">
-										<Button
-											variant="outline"
-											size="sm"
-											onclick={() => openRenameCredential(credential)}
-											disabled={busy}
-										>
-											Rename
-										</Button>
-										<Button
-											variant="outline"
-											size="sm"
-											onclick={() => openReplaceSecret(credential)}
-											disabled={busy}
-										>
-											Replace secret
-										</Button>
-										<Button
-											variant="outline"
-											size="sm"
-											onclick={() => removeCredential(credential)}
-											disabled={busy}
-										>
-											Delete
-										</Button>
-									</div>
-								</li>
-							{/each}
-						</ul>
+						<div class="grid gap-3">
+							<div class="flex items-center justify-between">
+								<h3 class="text-sm font-medium">Known hosts</h3>
+							</div>
+							{#if knownHosts.length === 0}
+								<p class="text-xs text-muted-foreground">
+									No host keys are trusted yet. Approving one while connecting adds it here.
+								</p>
+							{:else}
+								<ul class="grid gap-2">
+									{#each knownHosts as known (known.id)}
+										<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
+											<div class="min-w-0">
+												<p class="truncate font-mono text-sm font-medium">{known.hostKeyId}</p>
+												<p class="truncate text-xs text-muted-foreground">
+													{known.keyAlgorithm} · added {addedAt(known.createdAt)}
+												</p>
+												<p class="truncate font-mono text-xs text-muted-foreground">
+													{known.fingerprintSha256}
+												</p>
+											</div>
+											<div class="shrink-0">
+												<Button
+													variant="outline"
+													size="sm"
+													onclick={() => (forgetTarget = known)}
+													disabled={busy}
+												>
+													Forget
+												</Button>
+											</div>
+										</li>
+									{/each}
+								</ul>
+							{/if}
+						</div>
 					{/if}
-				</div>
-			{:else if section === 'snippets'}
-				<div class="grid gap-3">
-					<div class="flex items-center justify-between">
-						<h3 class="text-sm font-medium">Snippets</h3>
-						<Button size="sm" onclick={openCreateSnippet} disabled={busy}>New snippet</Button>
-					</div>
-					<p class="text-xs text-muted-foreground">
-						Commands kept encrypted in this vault. One is only ever sent to the session that is
-						already open, after you have read it in full and confirmed. {SNIPPET_SECRET_NOTE}
-					</p>
-					{#if snippets.length === 0}
-						<p class="text-xs text-muted-foreground">No snippets yet.</p>
-					{:else}
-						<ul class="grid gap-2">
-							{#each snippets as snippet (snippet.id)}
-								<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
-									<div class="min-w-0">
-										<p class="truncate text-sm font-medium">{snippet.name}</p>
-										<p class="truncate font-mono text-xs text-muted-foreground">
-											{snippetPreview(snippet.content)}
-										</p>
-										<p class="truncate text-xs text-muted-foreground">
-											updated {addedAt(snippet.updatedAt)}
-										</p>
-									</div>
-									<div class="flex shrink-0 gap-2">
-										<Button
-											size="sm"
-											onclick={() => openRunPreview(snippet)}
-											disabled={busy || !canRun}
-											title={canRun
-												? 'Read this command before it is sent'
-												: 'Connect a session first'}
-										>
-											Run
-										</Button>
-										<Button
-											variant="outline"
-											size="sm"
-											onclick={() => openEditSnippet(snippet)}
-											disabled={busy}
-										>
-											Edit
-										</Button>
-										<Button
-											variant="outline"
-											size="sm"
-											onclick={() => (snippetDeleteTarget = snippet)}
-											disabled={busy}
-										>
-											Delete
-										</Button>
-									</div>
-								</li>
-							{/each}
-						</ul>
-					{/if}
-				</div>
-			{:else if section === 'groups'}
-				<div class="grid gap-3">
-					<div class="flex items-center justify-between">
-						<h3 class="text-sm font-medium">Groups</h3>
-						<Button size="sm" onclick={openCreateGroup} disabled={busy}>New group</Button>
-					</div>
-					{#if groups.length === 0}
-						<p class="text-xs text-muted-foreground">No groups yet.</p>
-					{:else}
-						<ul class="grid gap-2">
-							{#each groups as group (group.id)}
-								<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
-									<p class="truncate text-sm font-medium">{group.name}</p>
-									<div class="flex shrink-0 gap-2">
-										<Button
-											variant="outline"
-											size="sm"
-											onclick={() => openRenameGroup(group)}
-											disabled={busy}
-										>
-											Rename
-										</Button>
-										<Button
-											variant="outline"
-											size="sm"
-											onclick={() => removeGroup(group)}
-											disabled={busy}
-										>
-											Delete
-										</Button>
-									</div>
-								</li>
-							{/each}
-						</ul>
-					{/if}
-				</div>
-			{:else if section === 'backup'}
-				<div class="grid gap-3">
-					<h3 class="text-sm font-medium">Backup &amp; Restore</h3>
-					<p class="text-xs text-muted-foreground">
-						A backup is one encrypted file, locked with a password you choose for it. It holds every
-						group, host, credential, known host and snippet in this vault, and it can be restored
-						into this vault or into another one with a different master password. It is not a sync:
-						restoring replaces every record in this vault with the ones in the file.
-					</p>
-					<BackupRestore {vaultStatus} {hasLiveSessions} onrestored={refresh} />
-				</div>
-			{:else}
-				<div class="grid gap-3">
-					<div class="flex items-center justify-between">
-						<h3 class="text-sm font-medium">Known hosts</h3>
-					</div>
-					{#if knownHosts.length === 0}
-						<p class="text-xs text-muted-foreground">
-							No host keys are trusted yet. Approving one while connecting adds it here.
-						</p>
-					{:else}
-						<ul class="grid gap-2">
-							{#each knownHosts as known (known.id)}
-								<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
-									<div class="min-w-0">
-										<p class="truncate font-mono text-sm font-medium">{known.hostKeyId}</p>
-										<p class="truncate text-xs text-muted-foreground">
-											{known.keyAlgorithm} · added {addedAt(known.createdAt)}
-										</p>
-										<p class="truncate font-mono text-xs text-muted-foreground">
-											{known.fingerprintSha256}
-										</p>
-									</div>
-									<div class="shrink-0">
-										<Button
-											variant="outline"
-											size="sm"
-											onclick={() => (forgetTarget = known)}
-											disabled={busy}
-										>
-											Forget
-										</Button>
-									</div>
-								</li>
-							{/each}
-						</ul>
-					{/if}
-				</div>
-			{/if}
-		</CardContent>
-	</Card>
+				</CardContent>
+			</Card>
+		{/if}
+	</div>
 
 	<Dialog open={forgetTarget !== null} onOpenChange={(open) => !open && (forgetTarget = null)}>
 		<DialogContent class="sm:max-w-md">

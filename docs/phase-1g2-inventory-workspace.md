@@ -126,3 +126,58 @@ host-workspace.svelte (Local UI State: search, filter, selection)
 - [ ] Tombol Import OpenSSH membuka dialog import wizard dan memicu refresh setelah import berhasil.
 - [ ] Mengunci vault membersihkan daftar host dan menutup panel detail seketika.
 - [ ] Window resizing tidak menimbulkan scrollbar horizontal pada outer page.
+
+---
+
+## 8. Phase 1G-2R1 Refinements: Refined Hosts Workspace and Unified Context Panel
+
+Revisi ini menyempurnakan hasil Phase 1G-2 berdasarkan evaluasi visual native desktop:
+
+### A. Penghapusan Card Wrapper Saved Inventory dan Toolbar Seamless
+
+- Menghilangkan Card wrapper besar, heading, dan deskripsi "Saved inventory" dari tampilan Hosts.
+- Section selector untuk Hosts, Credentials, Groups, Known Hosts, Snippets, dan Backup diubah menjadi navigation row yang ringkas dan menyatu langsung dengan workspace.
+- Toolbar pada `host-workspace.svelte` diletakkan langsung di bagian atas workspace tanpa outer card container, background berlebih, atau padding bertingkat.
+- Search input menjadi kontrol utama dengan alokasi ruang fleksibel terbesar, berdampingan dengan host count, group filter, tombol Quick Connect, Import OpenSSH, dan New Host.
+
+### B. Penyederhanaan Host Card
+
+- `host-card.svelte` dirampingkan untuk hanya menampilkan nama atau label host, badge group jika ada, badge credential jika terpasang, atau badge peringatan "Credential required" bila credential belum dihubungkan.
+- Menghapus string `username@address:port`, timestamp, teks "Selected", footer card, dan tombol Connect langsung dari kartu.
+- Detail teknis koneksi dan timestamp dipusatkan pada Host Detail Panel.
+- Status terpilih ditampilkan secara visual dan semantik menggunakan ring, border, latar aksen, serta atribut `aria-pressed="true"`.
+
+### C. Single-Click Selection dan Double-Click Connect
+
+- **Single click**: Memilih host, memperbarui state context panel, dan membuka Host Detail Panel tanpa memulai koneksi.
+- **Double click**: Menggunakan event `ondblclick` asli browser. Jika host memenuhi syarat connectable (memiliki credential, backend tidak sibuk, dan tidak sedang dalam status menghubungkan), double-click langsung memicu callback `onconnect(host)`. Jika credential belum terpasang, double-click tidak mengirimkan request ke backend dan hanya membuka detail panel.
+- **Keyboard navigation**: Card dapat difokuskan via Tab dan dipilih menggunakan tombol Enter atau Space. Pengguna keyboard mengeksekusi koneksi melalui tombol Connect utama di Host Detail Panel.
+
+### D. Unified Context Panel State
+
+- Menghindari beberapa boolean flag yang dapat menyebabkan inkonsistensi UI. State context panel didefinisikan sebagai discriminated union:
+  ```ts
+  type InventoryContext = { kind: 'host'; hostId: string } | { kind: 'quick-connect' } | null;
+  ```
+- **Ownership State**: Dikelola secara lokal di `host-workspace.svelte` sebagai boundary terdekat yang mengontrol toolbar, grid host, detail panel host, dan Quick Connect panel tanpa membutuhkan global store.
+- **Invariants Context**:
+  - Default: `null`.
+  - Memilih host membuka context `host` dan menutup Quick Connect jika sebelumnya aktif.
+  - Menekan tombol Quick Connect membuka context `quick-connect` dan membersihkan seleksi host.
+  - Host Detail Panel dan Quick Connect Panel tidak pernah dirender bersamaan.
+  - Menutup panel atau menekan tombol Escape mengembalikan state ke `null`.
+  - Jika filter atau pencarian membuat host terpilih tidak terlihat, context `host` otomatis direset ke `null`.
+
+### E. Quick Connect Right Context Panel dan Security Ownership
+
+- Card Quick Connect di bagian bawah halaman pada `+page.svelte` dihapus dan dipindahkan ke right context panel (`quick-connect-panel.svelte`) dengan token lebar desktop `w-context-panel`.
+- **Session Lifecycle & Invariants**: Seluruh form state, validation, dan lifecycle orchestration tetap dimiliki oleh `+page.svelte` dan diteruskan melalui binding/callback. Submit form tetap membuat `TerminalSession` baru, mengalihkan `activeWorkspace` ke `terminal`, dan memanggil `lifecycle.begin(...)`.
+- **Secret Hygiene**: Credential (password, private key, passphrase) hanya disimpan dalam memori form komponen root. Saat Quick Connect panel ditutup tanpa submit (atau saat pengguna berpindah ke host lain atau section lain), callback `onquickclear` dipanggil untuk mengosongkan seluruh field rahasia. Nilai non-secret (host, port, username, auth method) tetap dipertahankan untuk kenyamanan pengguna.
+- Tidak ada rahasia yang diteruskan ke HostCard, HostGrid, context state helper, atau disimpan ke persistent storage.
+
+### F. Hal yang Ditunda ke Phase 1G-2R2
+
+- Vault gate dan blur overlay.
+- Pemindahan tombol Lock ke sidebar atau penghapusan `VaultPanel`.
+- Posisi dan layout tombol traffic lights macOS.
+- Active-state styling dan tab indicator pada terminal tab strip.

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Host } from '#lib/inventory';
 	import { canConnectHost, hostConnectionHint } from '#lib/inventory';
-	import { Button } from '#lib/components/ui/button';
+	import { canTriggerDoubleClickConnect } from './context-state';
 
 	let {
 		host,
@@ -25,34 +25,48 @@
 
 	const connectable = $derived(canConnectHost(host));
 	const hint = $derived(hostConnectionHint(host));
+
+	function handleClick() {
+		onselect(host);
+	}
+
+	function handleDblClick() {
+		onselect(host);
+		if (canTriggerDoubleClickConnect(busy, connecting, connectable)) {
+			onconnect(host);
+		}
+	}
+
+	function handleKeyDown(event: KeyboardEvent) {
+		if (event.key === 'Enter' || event.key === ' ') {
+			event.preventDefault();
+			onselect(host);
+		}
+	}
 </script>
 
-<li
-	class="group relative flex flex-col justify-between rounded-lg border bg-card p-3.5 transition-colors {selected
-		? 'border-primary bg-accent/40 ring-1 ring-primary'
-		: 'border-border hover:border-muted-foreground/30 hover:bg-muted/30'}"
->
-	<button
-		type="button"
-		class="flex w-full flex-1 flex-col items-start gap-1.5 rounded-md text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-		onclick={() => onselect(host)}
+<li class="list-none">
+	<div
+		role="button"
+		tabindex="0"
+		class="group flex cursor-pointer flex-col gap-2 rounded-lg border p-3 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring {selected
+			? 'border-primary bg-accent/40 ring-1 ring-primary'
+			: 'border-border hover:border-muted-foreground/30 hover:bg-muted/30'}"
+		onclick={handleClick}
+		ondblclick={handleDblClick}
+		onkeydown={handleKeyDown}
 		aria-pressed={selected}
-		aria-label="Select {host.label}"
+		aria-label="{host.label}{selected ? ' (selected)' : ''}. Double-click to connect."
+		title="Click to view details, double-click to connect"
 	>
-		<div class="flex w-full items-center justify-between gap-2">
+		<div class="flex items-center justify-between gap-2">
 			<span class="truncate text-sm font-semibold text-foreground">{host.label}</span>
-			{#if selected}
-				<span class="shrink-0 text-[10px] font-medium tracking-wider text-primary uppercase"
-					>Selected</span
-				>
+			{#if connecting}
+				<span class="font-mono text-[11px] text-muted-foreground">Connecting…</span>
 			{/if}
 		</div>
 
-		<span class="truncate font-mono text-xs text-muted-foreground">
-			{host.username}@{host.address}:{host.port}
-		</span>
-
-		<div class="flex flex-wrap items-center gap-1.5 pt-1 text-xs">
+		<div class="flex flex-wrap items-center gap-1.5 text-xs">
 			{#if groupName}
 				<span
 					class="inline-flex items-center rounded border border-border/60 bg-muted/60 px-1.5 py-0.5 text-[11px] text-muted-foreground"
@@ -75,20 +89,5 @@
 				</span>
 			{/if}
 		</div>
-	</button>
-
-	<div class="mt-3 flex items-center justify-end border-t border-border/40 pt-2.5">
-		<Button
-			size="sm"
-			class="h-7 text-xs"
-			disabled={busy || connecting || !connectable}
-			onclick={(event) => {
-				event.stopPropagation();
-				onconnect(host);
-			}}
-			aria-label="Connect to {host.label}"
-		>
-			{connecting ? 'Connecting…' : 'Connect'}
-		</Button>
 	</div>
 </li>

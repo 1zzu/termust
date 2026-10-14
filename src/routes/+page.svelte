@@ -12,13 +12,6 @@
 	import VaultPanel from '#lib/components/vault-panel.svelte';
 	import { Button } from '#lib/components/ui/button';
 	import {
-		Card,
-		CardContent,
-		CardDescription,
-		CardHeader,
-		CardTitle
-	} from '#lib/components/ui/card';
-	import {
 		Dialog,
 		DialogContent,
 		DialogDescription,
@@ -26,16 +19,6 @@
 		DialogHeader,
 		DialogTitle
 	} from '#lib/components/ui/dialog';
-	import { Input } from '#lib/components/ui/input';
-	import { Label } from '#lib/components/ui/label';
-	import {
-		Select,
-		SelectContent,
-		SelectItem,
-		SelectTrigger,
-		SelectValue
-	} from '#lib/components/ui/select';
-	import { Textarea } from '#lib/components/ui/textarea';
 	import {
 		connectSsh,
 		disconnectSsh,
@@ -151,13 +134,6 @@
 			quickSubmitting = false;
 		}
 	});
-
-	// bits-ui reads a closed trigger's text from these, so the select shows a
-	// label instead of the raw value it stores.
-	const authMethods = [
-		{ value: 'password', label: 'Password' },
-		{ value: 'privateKey', label: 'Private key' }
-	];
 
 	onMount(() => {
 		lifecycle.attach();
@@ -344,116 +320,17 @@
 						hasLiveSessions={anyLiveSession}
 						hostConnecting={(hostId) => savedHostConnecting(sessions, hostId)}
 						onconnect={connectSavedHost}
+						bind:quickHost={host}
+						bind:quickPort={port}
+						bind:quickUsername={username}
+						bind:quickAuth={auth}
+						bind:quickPassword={password}
+						bind:quickPrivateKey={privateKey}
+						bind:quickPassphrase={passphrase}
+						{quickSubmitting}
+						onquicksubmit={handleSubmit}
+						onquickclear={clearCredentials}
 					/>
-
-					<Card>
-						<CardHeader>
-							<CardTitle>Quick Connect</CardTitle>
-							<CardDescription>
-								Connects straight from this device with credentials you type here. Saved hosts have
-								their own Connect button and are not used here. Every Connect opens a tab of its
-								own, so several sessions can run at once.
-							</CardDescription>
-						</CardHeader>
-						<CardContent>
-							<form class="grid gap-3 sm:grid-cols-2" onsubmit={handleSubmit}>
-								<div class="grid gap-1.5">
-									<Label for="host">Hostname or IP</Label>
-									<Input
-										id="host"
-										bind:value={host}
-										placeholder="server.example.com"
-										disabled={quickSubmitting}
-									/>
-								</div>
-								<div class="grid gap-1.5">
-									<Label for="port">Port</Label>
-									<Input
-										id="port"
-										type="number"
-										min="1"
-										max="65535"
-										bind:value={port}
-										disabled={quickSubmitting}
-									/>
-								</div>
-								<div class="grid gap-1.5">
-									<Label for="username">Username</Label>
-									<Input
-										id="username"
-										bind:value={username}
-										placeholder="root"
-										disabled={quickSubmitting}
-									/>
-								</div>
-								<div class="grid gap-1.5">
-									<Label for="auth">Authentication</Label>
-									<Select
-										type="single"
-										bind:value={auth}
-										items={authMethods}
-										disabled={quickSubmitting}
-									>
-										<SelectTrigger id="auth" class="w-full">
-											<SelectValue placeholder="Choose a method" />
-										</SelectTrigger>
-										<SelectContent>
-											<SelectItem value="password">Password</SelectItem>
-											<SelectItem value="privateKey">Private key</SelectItem>
-										</SelectContent>
-									</Select>
-								</div>
-
-								{#if auth === 'password'}
-									<div class="grid gap-1.5 sm:col-span-2">
-										<Label for="password">Password</Label>
-										<Input
-											id="password"
-											type="password"
-											bind:value={password}
-											disabled={quickSubmitting}
-										/>
-									</div>
-								{:else}
-									<div class="grid gap-1.5 sm:col-span-2">
-										<Label for="privateKey">Private key (OpenSSH format)</Label>
-										<Textarea
-											id="privateKey"
-											rows={6}
-											class="font-mono text-xs"
-											placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-											bind:value={privateKey}
-											disabled={quickSubmitting}
-										/>
-									</div>
-									<div class="grid gap-1.5 sm:col-span-2">
-										<Label for="passphrase">Passphrase (only if the key is encrypted)</Label>
-										<Input
-											id="passphrase"
-											type="password"
-											bind:value={passphrase}
-											disabled={quickSubmitting}
-										/>
-									</div>
-								{/if}
-
-								<div class="flex items-center gap-2 sm:col-span-2">
-									<Button type="submit" disabled={quickSubmitting}>
-										{quickSubmitting ? 'Connecting…' : 'Connect'}
-									</Button>
-									<Button
-										type="button"
-										variant="outline"
-										onclick={() => void lifecycle.disconnect()}
-										disabled={!canDisconnect}
-										title="Closes the connection but keeps the tab"
-									>
-										Disconnect
-									</Button>
-								</div>
-							</form>
-						</CardContent>
-					</Card>
 
 					{#if activeSession?.errorMessage}
 						<Alert variant="destructive">
