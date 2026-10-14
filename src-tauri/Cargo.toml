@@ -17,6 +17,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2.7.2", features = [] }
 
+[dev-dependencies]
+# The `test` feature adds Tauri's mock runtime, which lets the tests drive the
+# real command handlers instead of a copy of them.
+tauri = { version = "2.12.3", features = ["test"] }
+
 [dependencies]
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }

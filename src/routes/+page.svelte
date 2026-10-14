@@ -5,9 +5,9 @@
 	import { Terminal } from '@xterm/xterm';
 	import '@xterm/xterm/css/xterm.css';
 
-	import { Alert, AlertDescription, AlertTitle } from '$lib/components/ui/alert';
-	import { Button } from '$lib/components/ui/button';
-	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
+	import { Alert, AlertDescription, AlertTitle } from '#lib/components/ui/alert';
+	import { Button } from '#lib/components/ui/button';
+	import { Card, CardContent, CardHeader, CardTitle } from '#lib/components/ui/card';
 	import {
 		Dialog,
 		DialogContent,
@@ -15,18 +15,18 @@
 		DialogFooter,
 		DialogHeader,
 		DialogTitle
-	} from '$lib/components/ui/dialog';
-	import { Input } from '$lib/components/ui/input';
-	import { Label } from '$lib/components/ui/label';
+	} from '#lib/components/ui/dialog';
+	import { Input } from '#lib/components/ui/input';
+	import { Label } from '#lib/components/ui/label';
 	import {
 		Select,
 		SelectContent,
 		SelectItem,
 		SelectTrigger,
 		SelectValue
-	} from '$lib/components/ui/select';
-	import { Separator } from '$lib/components/ui/separator';
-	import { Textarea } from '$lib/components/ui/textarea';
+	} from '#lib/components/ui/select';
+	import { Separator } from '#lib/components/ui/separator';
+	import { Textarea } from '#lib/components/ui/textarea';
 	import {
 		SSH_EVENT,
 		belongsToSession,
@@ -39,7 +39,7 @@
 		respondHostKey,
 		statusLabel,
 		writeSsh
-	} from '$lib/ssh';
+	} from '#lib/ssh';
 	import type {
 		AuthMethod,
 		ConnectionStatus,
@@ -47,7 +47,7 @@
 		ErrorEvent,
 		HostKeyEvent,
 		StatusEvent
-	} from '$lib/types';
+	} from '#lib/types';
 
 	let host = $state('localhost');
 	let port = $state(22);

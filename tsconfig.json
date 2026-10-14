@@ -1,7 +1,14 @@
 {
 	"extends": "$app/tsconfig",
 	"compilerOptions": {
-		"strict": true
+		"strict": true,
+		// Vite resolves package.json `imports` for extensionless paths, but
+		// TypeScript only does so when the target carries an extension, so the
+		// same `#lib` mapping is declared here for the type checker.
+		"paths": {
+			"#lib": ["./src/lib/index.ts"],
+			"#lib/*": ["./src/lib/*"]
+		}
 	},
 	"include": ["src", "vite.config.ts"]
 }
