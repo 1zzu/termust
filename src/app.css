@@ -5,7 +5,7 @@
 
 /*
  * Termust uses a dark terminal-first theme with a light fallback. The tokens
- * below come from shadcn-svelte's "new-york" style with the neutral base color;
+ * below come from shadcn-svelte's "nova" style with the neutral base color;
  * only the values are tuned, the token names stay canonical.
  */
 :root {
@@ -31,6 +31,20 @@
 	--ring: oklch(0.708 0 0);
 	--terminal-background: oklch(0.145 0 0);
 	--terminal-foreground: oklch(0.985 0 0);
+
+	/* Layout dimensions */
+	--titlebar-height: 2.75rem;
+	--sidebar-width: 15rem;
+	--sidebar-collapsed-width: 3.5rem;
+	--context-panel-width: 20rem;
+	--terminal-tools-width: 18rem;
+
+	/* Status indicators */
+	--status-connected: oklch(0.696 0.17 162.48);
+	--status-connecting: oklch(0.769 0.188 70.08);
+	--status-disconnecting: oklch(0.769 0.188 70.08);
+	--status-error: oklch(0.645 0.246 16.439);
+	--status-idle: oklch(0.556 0 0);
 }
 
 .dark {
@@ -55,6 +69,13 @@
 	--ring: oklch(0.556 0 0);
 	--terminal-background: oklch(0.145 0 0);
 	--terminal-foreground: oklch(0.985 0 0);
+
+	/* Status indicators (dark mode tuned) */
+	--status-connected: oklch(0.723 0.18 162.48);
+	--status-connecting: oklch(0.795 0.184 70.08);
+	--status-disconnecting: oklch(0.795 0.184 70.08);
+	--status-error: oklch(0.68 0.23 16.439);
+	--status-idle: oklch(0.708 0 0);
 }
 
 @theme inline {
@@ -84,6 +105,18 @@
 	--color-ring: var(--ring);
 	--color-terminal-background: var(--terminal-background);
 	--color-terminal-foreground: var(--terminal-foreground);
+
+	--color-status-connected: var(--status-connected);
+	--color-status-connecting: var(--status-connecting);
+	--color-status-disconnecting: var(--status-disconnecting);
+	--color-status-error: var(--status-error);
+	--color-status-idle: var(--status-idle);
+
+	--spacing-titlebar: var(--titlebar-height);
+	--spacing-sidebar: var(--sidebar-width);
+	--spacing-sidebar-collapsed: var(--sidebar-collapsed-width);
+	--spacing-context-panel: var(--context-panel-width);
+	--spacing-terminal-tools: var(--terminal-tools-width);
 
 	--font-mono:
 		'JetBrains Mono', 'SFMono-Regular', 'Menlo', 'Consolas', 'DejaVu Sans Mono', monospace;
