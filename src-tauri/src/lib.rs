@@ -3,6 +3,7 @@
 //! The frontend owns the screens; this layer only exposes the SSH session
 //! commands it needs and keeps the session state alive between calls.
 
+mod inventory;
 mod ssh;
 // The vault is a self-contained core the app builds on; keeping it public lets
 // its API be used and tested directly, without going through the frontend.
@@ -75,7 +76,23 @@ pub fn run() {
             vault::vault_status,
             vault::create_vault,
             vault::unlock_vault,
-            vault::lock_vault
+            vault::lock_vault,
+            inventory::list_groups,
+            inventory::create_group,
+            inventory::rename_group,
+            inventory::delete_group,
+            inventory::list_hosts,
+            inventory::get_host,
+            inventory::create_host,
+            inventory::update_host,
+            inventory::delete_host,
+            inventory::list_credentials,
+            inventory::create_password_credential,
+            inventory::create_private_key_credential,
+            inventory::rename_credential,
+            inventory::replace_password,
+            inventory::replace_private_key,
+            inventory::delete_credential
         ])
         .run(tauri::generate_context!());
 

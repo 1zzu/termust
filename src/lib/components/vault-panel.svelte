@@ -23,9 +23,16 @@
 		type VaultStatus
 	} from '#lib/vault';
 
+	// The page owns the status so it can decide whether the saved inventory is
+	// on screen; locking here takes that inventory away there.
+	let {
+		status = $bindable<VaultStatus | undefined>(undefined)
+	}: {
+		status?: VaultStatus | undefined;
+	} = $props();
+
 	// The password lives here and nowhere else: not in a store, not in local
 	// storage, and it is cleared as soon as a call is done with it.
-	let status = $state<VaultStatus | undefined>(undefined);
 	let password = $state('');
 	let confirmation = $state('');
 	let busy = $state(false);
@@ -168,7 +175,7 @@
 			<div class="grid gap-2">
 				<p class="text-sm font-medium">Vault Unlocked</p>
 				<p class="text-xs text-muted-foreground">
-					Hosts and credentials will be stored here in a later phase.
+					Saved hosts and credentials live in this vault; manage them below.
 				</p>
 				<div>
 					<Button variant="outline" onclick={lock} disabled={busy}>Lock</Button>

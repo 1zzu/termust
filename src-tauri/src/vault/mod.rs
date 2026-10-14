@@ -24,6 +24,8 @@ mod model;
 mod storage;
 
 #[cfg(test)]
+pub(crate) mod test_support;
+#[cfg(test)]
 mod tests;
 
 use std::fmt;
@@ -36,11 +38,13 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use crypto::{KdfParams, SecretKey};
-use model::{
-    CRYPTO_VERSION, Envelope, KDF_ARGON2ID, SCHEMA_VERSION, StoredObject, VaultMeta, VaultObject,
-};
+use model::{CRYPTO_VERSION, Envelope, KDF_ARGON2ID, SCHEMA_VERSION, StoredObject, VaultMeta};
 
-pub use storage::DB_FILE;
+// `VaultObject` is what the object API answers with, so callers outside this
+// module need to be able to name it. `now` is also how a domain record builds
+// its timestamps, so both are part of the vault's public API.
+pub use model::VaultObject;
+pub use storage::{DB_FILE, now};
 
 /// What the frontend is told about the vault. The windows the app can be in are
 /// exactly these three.
@@ -181,7 +185,7 @@ impl Vault {
             return Err(VaultError::AlreadyInitialized);
         }
 
-        let vault_id = random_id()?;
+        let vault_id = new_id()?;
         let salt = crypto::random_bytes(crypto::SALT_LEN)?;
         let kek = crypto::derive_kek(password, &salt, self.kdf)?;
         let vault_key = SecretKey::generate()?;
@@ -238,14 +242,29 @@ impl Vault {
 
     /// Encrypts a new object and returns its id.
     pub fn put_object(&self, kind: &str, payload: &str) -> Result<String, VaultError> {
+        let id = new_id()?;
+        self.put_object_with_id(&id, kind, payload)?;
+        Ok(id)
+    }
+
+    /// Encrypts a new object under an id the caller already chose.
+    ///
+    /// `put_object` is the usual entry point. This exists for callers whose
+    /// payload contains the id as well, so that the two can never drift apart:
+    /// the id is part of the object's Additional Authenticated Data.
+    pub fn put_object_with_id(
+        &self,
+        id: &str,
+        kind: &str,
+        payload: &str,
+    ) -> Result<(), VaultError> {
         let unlocked = self.unlocked()?;
-        let id = random_id()?;
         let plaintext = Envelope::new(kind, payload).to_bytes()?;
-        let encrypted = crypto::encrypt_object(&unlocked.key, &id, kind, &plaintext)?;
+        let encrypted = crypto::encrypt_object(&unlocked.key, id, kind, &plaintext)?;
 
         let now = storage::now();
         let object = StoredObject {
-            id: id.clone(),
+            id: id.to_string(),
             kind: kind.to_string(),
             encrypted_payload: encrypted.ciphertext,
             nonce: encrypted.nonce,
@@ -256,8 +275,7 @@ impl Vault {
         };
 
         let connection = self.connection()?;
-        storage::insert_object(&connection, &object)?;
-        Ok(id)
+        storage::insert_object(&connection, &object)
     }
 
     /// Reads and decrypts one active object.
@@ -324,12 +342,12 @@ impl Vault {
     }
 }
 
-/// A random version 4 UUID.
+/// A random version 4 UUID, for a new object.
 ///
 /// The bytes come from the same random source as the keys rather than
 /// `Uuid::new_v4`, so a failing source is reported as an error here too instead
 /// of panicking.
-fn random_id() -> Result<String, VaultError> {
+pub fn new_id() -> Result<String, VaultError> {
     let mut bytes = crypto::random_bytes(16)?;
     bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
     bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
@@ -424,11 +442,13 @@ impl VaultState {
 /// Runs one blocking vault operation on the blocking pool.
 ///
 /// Both Argon2id and SQLite block the calling thread, so no command does its
-/// work on the UI thread.
-async fn blocking<T, F>(app: AppHandle, work: F) -> Result<T, String>
+/// work on the UI thread. The error type is generic so the inventory commands,
+/// which report their own error type, reach the vault through the same path.
+pub(crate) async fn blocking<T, E, F>(app: AppHandle, work: F) -> Result<T, String>
 where
     T: Send + 'static,
-    F: FnOnce(&mut Vault) -> Result<T, VaultError> + Send + 'static,
+    E: fmt::Display + Send + 'static,
+    F: FnOnce(&mut Vault) -> Result<T, E> + Send + 'static,
 {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<VaultState>();

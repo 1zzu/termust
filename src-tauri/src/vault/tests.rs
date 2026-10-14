@@ -6,45 +6,17 @@
 //! tests exercise the same code paths the app does.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rusqlite::{Connection, params};
-use uuid::Uuid;
 
 use super::model::{CRYPTO_VERSION, ENVELOPE_VERSION};
 use super::storage;
-use super::{DB_FILE, Vault, VaultError, VaultStatus};
+use super::test_support::TempVault;
+use super::{Vault, VaultError, VaultStatus};
 
 /// The master password every test creates its vault with.
 const PASSWORD: &str = "a-strong-master-password";
-
-/// A temporary directory that removes itself, and the database path inside it.
-struct TempVault {
-    directory: PathBuf,
-}
-
-impl TempVault {
-    fn new() -> Self {
-        let directory = std::env::temp_dir().join(format!("termust-vault-test-{}", Uuid::new_v4()));
-        fs::create_dir_all(&directory).expect("the temporary directory was created");
-        Self { directory }
-    }
-
-    fn database(&self) -> PathBuf {
-        self.directory.join(DB_FILE)
-    }
-
-    /// A fresh handle on the same database, as if the app had been restarted.
-    fn vault(&self) -> Vault {
-        Vault::with_test_kdf(self.database())
-    }
-}
-
-impl Drop for TempVault {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.directory);
-    }
-}
 
 /// A vault that has been created and is left unlocked.
 fn created_vault() -> (TempVault, Vault) {

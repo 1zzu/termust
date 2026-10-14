@@ -22,7 +22,9 @@ sengaja tidak ada (lihat bagian _Yang sengaja belum dibuat_).
 
 Di atas baseline itu, Phase 1A menambahkan fondasi **encrypted local vault**: vault lokal yang
 dibuat dengan master password, disimpan terenkripsi di SQLite, serta dapat dikunci dan dibuka
-kembali. Host management dan sinkronisasi belum termasuk dan berada di fase berikutnya.
+kembali. Phase 1B1 lalu memakai vault itu untuk menyimpan **Group, Credential, dan Host**:
+CRUD lokal yang seluruhnya terenkripsi, lengkap dengan relasi Host ke Group dan Credential.
+Menghubungkan saved Host ke sesi SSH belum termasuk dan dikerjakan di Phase 1B2.
 
 ## Prasyarat
 
@@ -69,8 +71,13 @@ packaging, bukan kegagalan kode.
 
 - **Local vault (Phase 1A).** Membuat vault dengan master password, mengunci dan membukanya
   kembali, serta menyimpan object terenkripsi di SQLite. Lihat bagian _Local vault_.
-- Form koneksi: host atau IP, port (default 22), username, pilihan autentikasi, dan
-  kredensial sesuai pilihan.
+- **Saved inventory (Phase 1B1).** CRUD Group, Host, dan Credential di dalam vault, termasuk
+  menautkan Host ke Group dan Credential, mengganti secret credential, dan menghapus. Seluruh
+  isi terenkripsi, dan secret credential tidak pernah kembali ke frontend. Lihat bagian
+  _Saved inventory_.
+- **Quick Connect.** Form koneksi langsung tanpa menyimpan host: host atau IP, port (default 22),
+  username, pilihan autentikasi, dan kredensial sesuai pilihan. Form ini belum memakai saved Host
+  maupun saved Credential.
 - Autentikasi password dan private key (termasuk key terenkripsi lewat passphrase).
 - Verifikasi host key: fingerprint SHA-256 ditampilkan sebelum persetujuan pertama, dan
   host key tidak pernah diterima otomatis. Host yang telanjur disetujui dan kemudian
@@ -107,13 +114,35 @@ Vault Key --XChaCha20-Poly1305--> payload object
 Format penyimpanan dan versioning dijelaskan di
 [`docs/vault-format-v1.md`](docs/vault-format-v1.md).
 
+## Saved inventory (Phase 1B1)
+
+Group, Host, dan Credential disimpan sebagai object di vault yang sama: satu row `vault_objects`
+per record, dengan `kind` `group`, `host`, atau `credential`. Tidak ada tabel baru dan tidak ada
+perubahan pada crypto Phase 1A.
+
+- CRUD lengkap untuk ketiganya, dan semuanya menuntut vault dalam keadaan unlocked. Saat vault
+  terkunci seluruh command ditolak dan state inventory di frontend dibersihkan.
+- Host dapat menunjuk satu Group dan satu Credential; relasinya divalidasi setelah payload
+  didekripsi. Group atau Credential yang masih dipakai Host tidak dapat dihapus, dan tidak ada
+  cascade delete.
+- Delete memakai tombstone, sama seperti object vault lainnya.
+- Credential secret — password, private key, dan passphrase — hanya berjalan satu arah: dikirim ke
+  Rust saat create atau replace, dan tidak pernah dikembalikan. Daftar dan detail hanya
+  mengembalikan summary tanpa field secret, dan form edit tidak memuat secret lama.
+
+Model data lengkapnya ada di [`docs/local-data-model-v1.md`](docs/local-data-model-v1.md).
+
+Saved Host belum dapat dipakai untuk membuka sesi SSH: tombol connect pada saved Host belum ada,
+dan itu bagian dari Phase 1B2.
+
 ## Yang sengaja belum dibuat
 
-Persistent known-hosts, host atau credential yang tersimpan, sinkronisasi, enkripsi E2EE
-lintas perangkat, akun, backend Axum, SFTP, port forwarding, jump host, snippets, web client,
-Android/iOS, tim dan RBAC, plugin, serta auto-update. Local vault sudah ada, tetapi belum
-menyimpan host maupun kredensial. Known-hosts pada spike ini hanya berlaku selama aplikasi
-berjalan.
+Persistent known-hosts, connect dari saved Host, auto-run credential, SSH agent, certificate,
+tags, notes, search, import OpenSSH config, backup/export/import, auto-lock timer, sinkronisasi,
+enkripsi E2EE lintas perangkat, akun, backend Axum, SFTP, port forwarding, jump host, snippets,
+web client, Android/iOS, tim dan RBAC, plugin, serta auto-update. Group, Host, dan Credential
+sudah tersimpan di vault (Phase 1B1), tetapi belum ada yang memakainya untuk membuka sesi SSH.
+Known-hosts pada spike ini hanya berlaku selama aplikasi berjalan.
 
 ## Pengujian
 
@@ -135,9 +164,10 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` menjalankan test vault (lifecycle, crypto, storage, dan corruption) bersama test
-SSH. Test vault memakai temporary directory dan parameter Argon2id yang ringan, jadi tidak pernah
-menyentuh database atau app data pengguna.
+`cargo test` menjalankan test vault (lifecycle, crypto, storage, dan corruption), test inventory
+(Group, Host, Credential, relasi, dan handling secret), serta test SSH. Semuanya memakai temporary
+directory dan parameter Argon2id yang ringan, jadi tidak pernah menyentuh database atau app data
+pengguna.
 
 ### Live test terhadap server SSH sungguhan
 

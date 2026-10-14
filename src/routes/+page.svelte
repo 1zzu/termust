@@ -6,9 +6,16 @@
 	import '@xterm/xterm/css/xterm.css';
 
 	import { Alert, AlertDescription, AlertTitle } from '#lib/components/ui/alert';
+	import InventoryPanel from '#lib/components/inventory-panel.svelte';
 	import VaultPanel from '#lib/components/vault-panel.svelte';
 	import { Button } from '#lib/components/ui/button';
-	import { Card, CardContent, CardHeader, CardTitle } from '#lib/components/ui/card';
+	import {
+		Card,
+		CardContent,
+		CardDescription,
+		CardHeader,
+		CardTitle
+	} from '#lib/components/ui/card';
 	import {
 		Dialog,
 		DialogContent,
@@ -49,6 +56,11 @@
 		HostKeyEvent,
 		StatusEvent
 	} from '#lib/types';
+	import type { VaultStatus } from '#lib/vault';
+
+	// The vault state lives here so the saved inventory appears and disappears
+	// with it; the vault panel owns the password fields themselves.
+	let vaultStatus = $state<VaultStatus | undefined>(undefined);
 
 	let host = $state('localhost');
 	let port = $state(22);
@@ -69,6 +81,13 @@
 	let terminal: Terminal | undefined;
 	let fitAddon: FitAddon | undefined;
 	let resizeObserver: ResizeObserver | undefined;
+
+	// bits-ui reads a closed trigger's text from these, so the select shows a
+	// label instead of the raw value it stores.
+	const authMethods = [
+		{ value: 'password', label: 'Password' },
+		{ value: 'privateKey', label: 'Private key' }
+	];
 
 	const busy = $derived(
 		status === 'connecting' || status === 'verifying_host_key' || status === 'authenticating'
@@ -241,7 +260,7 @@
 		<div>
 			<h1 class="text-lg font-semibold">Termust</h1>
 			<p class="text-xs text-muted-foreground">
-				Direct SSH technical spike — connects straight from this device.
+				Direct SSH from this device. Saved hosts and credentials are stored in the local vault.
 			</p>
 		</div>
 		<div class="flex items-center gap-2 text-sm">
@@ -257,84 +276,94 @@
 		</div>
 	</header>
 
-	<VaultPanel />
+	<!-- The panels scroll next to the terminal instead of squeezing it: the
+	     window keeps its height on every screen size. -->
+	<div class="grid min-h-0 flex-1 auto-rows-max content-start gap-4 overflow-y-auto">
+		<VaultPanel bind:status={vaultStatus} />
 
-	<Card>
-		<CardHeader>
-			<CardTitle>Connection</CardTitle>
-		</CardHeader>
-		<CardContent>
-			<form class="grid gap-3 sm:grid-cols-2" onsubmit={handleSubmit}>
-				<div class="grid gap-1.5">
-					<Label for="host">Hostname or IP</Label>
-					<Input id="host" bind:value={host} placeholder="server.example.com" disabled={busy} />
-				</div>
-				<div class="grid gap-1.5">
-					<Label for="port">Port</Label>
-					<Input id="port" type="number" min="1" max="65535" bind:value={port} disabled={busy} />
-				</div>
-				<div class="grid gap-1.5">
-					<Label for="username">Username</Label>
-					<Input id="username" bind:value={username} placeholder="root" disabled={busy} />
-				</div>
-				<div class="grid gap-1.5">
-					<Label for="auth">Authentication</Label>
-					<Select type="single" bind:value={auth} disabled={busy}>
-						<SelectTrigger id="auth" class="w-full">
-							<SelectValue placeholder="Choose a method" />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value="password">Password</SelectItem>
-							<SelectItem value="privateKey">Private key</SelectItem>
-						</SelectContent>
-					</Select>
-				</div>
+		<InventoryPanel status={vaultStatus} />
 
-				{#if auth === 'password'}
-					<div class="grid gap-1.5 sm:col-span-2">
-						<Label for="password">Password</Label>
-						<Input id="password" type="password" bind:value={password} disabled={busy} />
+		<Card>
+			<CardHeader>
+				<CardTitle>Quick Connect</CardTitle>
+				<CardDescription>
+					Connects straight from this device with credentials you type here. Saved hosts are not
+					used to connect yet.
+				</CardDescription>
+			</CardHeader>
+			<CardContent>
+				<form class="grid gap-3 sm:grid-cols-2" onsubmit={handleSubmit}>
+					<div class="grid gap-1.5">
+						<Label for="host">Hostname or IP</Label>
+						<Input id="host" bind:value={host} placeholder="server.example.com" disabled={busy} />
 					</div>
-				{:else}
-					<div class="grid gap-1.5 sm:col-span-2">
-						<Label for="privateKey">Private key (OpenSSH format)</Label>
-						<Textarea
-							id="privateKey"
-							rows={6}
-							class="font-mono text-xs"
-							placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-							bind:value={privateKey}
-							disabled={busy}
-						/>
+					<div class="grid gap-1.5">
+						<Label for="port">Port</Label>
+						<Input id="port" type="number" min="1" max="65535" bind:value={port} disabled={busy} />
 					</div>
-					<div class="grid gap-1.5 sm:col-span-2">
-						<Label for="passphrase">Passphrase (only if the key is encrypted)</Label>
-						<Input id="passphrase" type="password" bind:value={passphrase} disabled={busy} />
+					<div class="grid gap-1.5">
+						<Label for="username">Username</Label>
+						<Input id="username" bind:value={username} placeholder="root" disabled={busy} />
 					</div>
-				{/if}
+					<div class="grid gap-1.5">
+						<Label for="auth">Authentication</Label>
+						<Select type="single" bind:value={auth} items={authMethods} disabled={busy}>
+							<SelectTrigger id="auth" class="w-full">
+								<SelectValue placeholder="Choose a method" />
+							</SelectTrigger>
+							<SelectContent>
+								<SelectItem value="password">Password</SelectItem>
+								<SelectItem value="privateKey">Private key</SelectItem>
+							</SelectContent>
+						</Select>
+					</div>
 
-				<div class="flex items-center gap-2 sm:col-span-2">
-					<Button type="submit" disabled={busy || connected}>
-						{busy ? 'Connecting…' : 'Connect'}
-					</Button>
-					<Button type="button" variant="outline" onclick={disconnect} disabled={!sessionId}>
-						Disconnect
-					</Button>
-				</div>
-			</form>
-		</CardContent>
-	</Card>
+					{#if auth === 'password'}
+						<div class="grid gap-1.5 sm:col-span-2">
+							<Label for="password">Password</Label>
+							<Input id="password" type="password" bind:value={password} disabled={busy} />
+						</div>
+					{:else}
+						<div class="grid gap-1.5 sm:col-span-2">
+							<Label for="privateKey">Private key (OpenSSH format)</Label>
+							<Textarea
+								id="privateKey"
+								rows={6}
+								class="font-mono text-xs"
+								placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+								bind:value={privateKey}
+								disabled={busy}
+							/>
+						</div>
+						<div class="grid gap-1.5 sm:col-span-2">
+							<Label for="passphrase">Passphrase (only if the key is encrypted)</Label>
+							<Input id="passphrase" type="password" bind:value={passphrase} disabled={busy} />
+						</div>
+					{/if}
 
-	{#if errorText}
-		<Alert variant="destructive">
-			<AlertTitle>{errorTitle}</AlertTitle>
-			<AlertDescription>{errorText}</AlertDescription>
-		</Alert>
-	{:else if statusMessage}
-		<Alert>
-			<AlertDescription>{statusMessage}</AlertDescription>
-		</Alert>
-	{/if}
+					<div class="flex items-center gap-2 sm:col-span-2">
+						<Button type="submit" disabled={busy || connected}>
+							{busy ? 'Connecting…' : 'Connect'}
+						</Button>
+						<Button type="button" variant="outline" onclick={disconnect} disabled={!sessionId}>
+							Disconnect
+						</Button>
+					</div>
+				</form>
+			</CardContent>
+		</Card>
+
+		{#if errorText}
+			<Alert variant="destructive">
+				<AlertTitle>{errorTitle}</AlertTitle>
+				<AlertDescription>{errorText}</AlertDescription>
+			</Alert>
+		{:else if statusMessage}
+			<Alert>
+				<AlertDescription>{statusMessage}</AlertDescription>
+			</Alert>
+		{/if}
+	</div>
 
 	<Separator />
 
