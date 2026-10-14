@@ -104,9 +104,11 @@ Lifecycle terminal Phase 1F mewajibkan seluruh instansi xterm.js dan PTY connect
   - Kontainer Inventory Workspace disembunyikan menggunakan kelas CSS `class:hidden={activeWorkspace !== 'inventory'}`.
   - State form Quick Connect, seleksi data, dan form modal tidak hilang ketika pengguna melihat terminal.
 
-- **Global Overlays dan Alerts**:
+- **Global Overlays, Alerts, dan Layout Sizing**:
   - `Dialog` verifikasi host key diletakkan di root komponen sehingga dialog tetap tampil di atas aplikasi saat dibutuhkan, terlepas dari workspace aktif.
-  - Banner peringatan error global (`eventsError`) ditempatkan di root main container agar langsung terbaca pengguna.
+  - Area konten utama menggunakan wrapper `flex h-full min-h-0 flex-col`.
+  - Banner peringatan error global (`eventsError`) menggunakan kelas `shrink-0 p-4 pb-0` agar ukurannya tidak memotong workspace.
+  - Workspace Inventory dan Terminal ditempatkan di dalam kontainer `relative min-h-0 flex-1 overflow-hidden`, sehingga saat banner error muncul, workspace otomatis menyesuaikan tingginya dengan sisa ruang vertikal tanpa overflow di outer window.
 
 ---
 
@@ -134,8 +136,8 @@ Konfigurasi window pada `src-tauri/tauri.conf.json` diperbarui:
 - `titleBarStyle: "Overlay"` dan `hiddenTitle: true` mengaktifkan integrasi native traffic lights macOS ke dalam area header HTML aplikasi.
 - `decorations: true` dipertahankan sehingga window controls asli sistem operasi tetap aktif.
 - Window dragging ditangani secara deklaratif menggunakan atribut `data-tauri-drag-region` pada spacer kosong HTML titlebar.
+- Pada `src-tauri/capabilities/default.json`, permission `core:window:allow-start-dragging` ditambahkan ke capability window `main` karena Tauri v2 membutuhkan izin eksplisit untuk memulai dragging window melalui drag region.
 - Atribut drag region TIDAK dipasang pada tombol navigasi, tab strip, tombol close tab, atau tombol disconnect. Klik dan seleksi pada kontrol interaktif tidak menyeret window.
-- Tidak ada penambahan permission baru pada `src-tauri/capabilities/default.json` karena manipulasi window tidak memerlukan pemanggilan Window API secara manual.
 
 ---
 
@@ -154,18 +156,20 @@ Konfigurasi window pada `src-tauri/tauri.conf.json` diperbarui:
 
 1. `src-tauri/tauri.conf.json`:
    - Menambahkan `"decorations": true`, `"titleBarStyle": "Overlay"`, `"hiddenTitle": true`.
-2. `src/lib/components/session-tab-strip.svelte`:
+2. `src-tauri/capabilities/default.json`:
+   - Menambahkan permission `"core:window:allow-start-dragging"`.
+3. `src/lib/components/session-tab-strip.svelte`:
    - Mengganti warna status dot hardcoded dengan design tokens semantik (`bg-status-idle`, `bg-status-disconnecting`, `bg-status-connected`, `bg-status-error`, `bg-status-connecting`).
    - Menerima prop opsional `class` untuk kustomisasi styling tanpa merusak fungsionalitas tab.
-3. `src/lib/components/app-shell/app-shell.svelte` (baru):
+4. `src/lib/components/app-shell/app-shell.svelte` (baru):
    - Kontainer root layout desktop.
-4. `src/lib/components/app-shell/app-titlebar.svelte` (baru):
+5. `src/lib/components/app-shell/app-titlebar.svelte` (baru):
    - Titlebar desktop dengan safe area macOS dan integrasi `SessionTabStrip`.
-5. `src/lib/components/app-shell/app-sidebar.svelte` (baru):
+6. `src/lib/components/app-shell/app-sidebar.svelte` (baru):
    - Sidebar navigasi collapsible dengan indikator status vault pasif.
-6. `src/routes/+page.svelte`:
+7. `src/routes/+page.svelte`:
    - Refactor root page orchestrator untuk mengintegrasikan `AppShell`, memisahkan workspace, dan mengatur mounting yang aman.
-7. `docs/phase-1g1-app-shell.md` (baru):
+8. `docs/phase-1g1-app-shell.md` (baru):
    - Dokumentasi arsitektur dan checklist pengujian manual.
 
 ---
