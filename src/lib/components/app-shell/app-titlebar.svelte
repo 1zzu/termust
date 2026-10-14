@@ -2,6 +2,7 @@
 	import ServerIcon from '@lucide/svelte/icons/server';
 
 	import SessionTabStrip from '#lib/components/session-tab-strip.svelte';
+	import { getVisualActiveSessionId } from '#lib/components/vault/vault-gate-state';
 	import { Button } from '#lib/components/ui/button';
 	import { statusLabel } from '#lib/ssh';
 	import type { TerminalSession } from '#lib/session-tabs';
@@ -33,6 +34,10 @@
 	} = $props();
 
 	const activeSession = $derived(sessions.find((s) => s.id === activeSessionId));
+	const visualActiveSessionId = $derived(
+		getVisualActiveSessionId(activeWorkspace, activeSessionId)
+	);
+	const visualActiveSession = $derived(activeWorkspace === 'terminal' ? activeSession : undefined);
 
 	function activeStatusDot(session?: TerminalSession): string {
 		if (!session) return 'bg-status-idle';
@@ -73,7 +78,7 @@
 	<div class="flex max-w-2xl min-w-0 shrink items-center overflow-hidden">
 		<SessionTabStrip
 			{sessions}
-			{activeSessionId}
+			activeSessionId={visualActiveSessionId}
 			onselect={onselectsession}
 			onclose={onclosesession}
 			class="border-0 bg-transparent p-0"
@@ -85,17 +90,19 @@
 
 	<!-- Right area: active session summary and controls -->
 	<div class="flex shrink-0 items-center gap-2 text-xs">
-		{#if activeSession}
+		{#if visualActiveSession}
 			<div class="flex items-center gap-1.5 px-1 py-0.5 text-muted-foreground">
-				<span class="size-2 rounded-full {activeStatusDot(activeSession)}" aria-hidden="true"
+				<span class="size-2 rounded-full {activeStatusDot(visualActiveSession)}" aria-hidden="true"
 				></span>
 				<span
 					class="max-w-32 truncate font-mono text-[11px] text-foreground"
-					title={activeSession.title}
+					title={visualActiveSession.title}
 				>
-					{activeSession.title}
+					{visualActiveSession.title}
 				</span>
-				<span class="text-[11px] text-muted-foreground">({statusLabel(activeSession.status)})</span>
+				<span class="text-[11px] text-muted-foreground"
+					>({statusLabel(visualActiveSession.status)})</span
+				>
 			</div>
 			{#if canDisconnect && ondisconnect}
 				<Button

@@ -100,7 +100,9 @@
 		quickPassphrase = $bindable(''),
 		quickSubmitting = false,
 		onquicksubmit,
-		onquickclear
+		onquickclear,
+		openQuickConnect = $bindable(false),
+		onopenvault
 	}: {
 		vaultStatus: VaultStatus | undefined;
 		/** The status of the tab on screen. */
@@ -124,6 +126,8 @@
 		quickSubmitting?: boolean;
 		onquicksubmit?: (event: SubmitEvent) => void;
 		onquickclear?: () => void;
+		openQuickConnect?: boolean;
+		onopenvault?: () => void;
 	} = $props();
 
 	let section = $state<'hosts' | 'credentials' | 'groups' | 'known_hosts' | 'snippets' | 'backup'>(
@@ -195,6 +199,12 @@
 	let holding = false;
 
 	$effect(() => {
+		if (vaultStatus !== 'unlocked') {
+			section = 'hosts';
+		}
+	});
+
+	$effect(() => {
 		if (visible && !holding) {
 			holding = true;
 			void refresh();
@@ -218,6 +228,10 @@
 
 	/** Switching sections re-reads, so a key approved since the vault opened shows up. */
 	function show(next: typeof section) {
+		if (vaultStatus !== 'unlocked') {
+			section = 'hosts';
+			return;
+		}
 		if (section === 'hosts' && next !== 'hosts') {
 			onquickclear?.();
 		}
@@ -540,622 +554,625 @@
 	}
 </script>
 
-{#if visible}
-	<div class="flex flex-col gap-4">
-		<!-- Compact section navigation bar -->
-		<div class="flex items-center gap-1.5 overflow-x-auto border-b border-border/60 pb-2">
-			<Button
-				size="sm"
-				variant={section === 'hosts' ? 'default' : 'ghost'}
-				class="h-7 text-xs"
-				onclick={() => show('hosts')}
-			>
-				Hosts ({hosts.length})
-			</Button>
-			<Button
-				size="sm"
-				variant={section === 'credentials' ? 'default' : 'ghost'}
-				class="h-7 text-xs"
-				onclick={() => show('credentials')}
-			>
-				Credentials ({credentials.length})
-			</Button>
-			<Button
-				size="sm"
-				variant={section === 'groups' ? 'default' : 'ghost'}
-				class="h-7 text-xs"
-				onclick={() => show('groups')}
-			>
-				Groups ({groups.length})
-			</Button>
-			<Button
-				size="sm"
-				variant={section === 'known_hosts' ? 'default' : 'ghost'}
-				class="h-7 text-xs"
-				onclick={() => show('known_hosts')}
-			>
-				Known hosts ({knownHosts.length})
-			</Button>
-			<Button
-				size="sm"
-				variant={section === 'snippets' ? 'default' : 'ghost'}
-				class="h-7 text-xs"
-				onclick={() => show('snippets')}
-			>
-				Snippets ({snippets.length})
-			</Button>
-			<Button
-				size="sm"
-				variant={section === 'backup' ? 'default' : 'ghost'}
-				class="h-7 text-xs"
-				onclick={() => show('backup')}
-			>
-				Backup &amp; Restore
-			</Button>
-		</div>
+<div class="flex flex-col gap-4">
+	<!-- Compact section navigation bar -->
+	<div class="flex items-center gap-1.5 overflow-x-auto border-b border-border/60 pb-2">
+		<Button
+			size="sm"
+			variant={section === 'hosts' ? 'default' : 'ghost'}
+			class="h-7 text-xs"
+			onclick={() => show('hosts')}
+		>
+			Hosts ({hosts.length})
+		</Button>
+		<Button
+			size="sm"
+			variant={section === 'credentials' ? 'default' : 'ghost'}
+			class="h-7 text-xs"
+			onclick={() => show('credentials')}
+			disabled={vaultStatus !== 'unlocked'}
+		>
+			Credentials ({credentials.length})
+		</Button>
+		<Button
+			size="sm"
+			variant={section === 'groups' ? 'default' : 'ghost'}
+			class="h-7 text-xs"
+			onclick={() => show('groups')}
+			disabled={vaultStatus !== 'unlocked'}
+		>
+			Groups ({groups.length})
+		</Button>
+		<Button
+			size="sm"
+			variant={section === 'known_hosts' ? 'default' : 'ghost'}
+			class="h-7 text-xs"
+			onclick={() => show('known_hosts')}
+			disabled={vaultStatus !== 'unlocked'}
+		>
+			Known hosts ({knownHosts.length})
+		</Button>
+		<Button
+			size="sm"
+			variant={section === 'snippets' ? 'default' : 'ghost'}
+			class="h-7 text-xs"
+			onclick={() => show('snippets')}
+			disabled={vaultStatus !== 'unlocked'}
+		>
+			Snippets ({snippets.length})
+		</Button>
+		<Button
+			size="sm"
+			variant={section === 'backup' ? 'default' : 'ghost'}
+			class="h-7 text-xs"
+			onclick={() => show('backup')}
+			disabled={vaultStatus !== 'unlocked'}
+		>
+			Backup &amp; Restore
+		</Button>
+	</div>
 
-		{#if errorText}
-			<Alert variant="destructive">
-				<AlertTitle>Inventory error</AlertTitle>
-				<AlertDescription>{errorText}</AlertDescription>
+	{#if errorText}
+		<Alert variant="destructive">
+			<AlertTitle>Inventory error</AlertTitle>
+			<AlertDescription>{errorText}</AlertDescription>
+		</Alert>
+	{/if}
+
+	{#if section === 'hosts'}
+		<HostWorkspace
+			{hosts}
+			{groups}
+			{credentials}
+			{busy}
+			{vaultStatus}
+			{hostConnecting}
+			onconnect={(host) => onconnect?.(host)}
+			onedit={openEditHost}
+			ondelete={removeHost}
+			oncreate={openCreateHost}
+			onimported={refresh}
+			bind:quickHost
+			bind:quickPort
+			bind:quickUsername
+			bind:quickAuth
+			bind:quickPassword
+			bind:quickPrivateKey
+			bind:quickPassphrase
+			{quickSubmitting}
+			{onquicksubmit}
+			{onquickclear}
+			bind:openQuickConnect
+			{onopenvault}
+		/>
+	{:else}
+		<Card>
+			<CardContent class="grid gap-4 pt-6">
+				{#if section === 'credentials'}
+					<div class="grid gap-3">
+						<div class="flex items-center justify-between">
+							<h3 class="text-sm font-medium">Credentials</h3>
+							<Button size="sm" onclick={openCreateCredential} disabled={busy}
+								>New credential</Button
+							>
+						</div>
+						{#if credentials.length === 0}
+							<p class="text-xs text-muted-foreground">No saved credentials yet.</p>
+						{:else}
+							<ul class="grid gap-2">
+								{#each credentials as credential (credential.id)}
+									<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
+										<div class="min-w-0">
+											<p class="truncate text-sm font-medium">{credential.name}</p>
+											<p class="truncate text-xs text-muted-foreground">
+												{credential.kind === 'password' ? 'Password' : 'Private key'}
+											</p>
+										</div>
+										<div class="flex shrink-0 gap-2">
+											<Button
+												variant="outline"
+												size="sm"
+												onclick={() => openRenameCredential(credential)}
+												disabled={busy}
+											>
+												Rename
+											</Button>
+											<Button
+												variant="outline"
+												size="sm"
+												onclick={() => openReplaceSecret(credential)}
+												disabled={busy}
+											>
+												Replace secret
+											</Button>
+											<Button
+												variant="outline"
+												size="sm"
+												onclick={() => removeCredential(credential)}
+												disabled={busy}
+											>
+												Delete
+											</Button>
+										</div>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</div>
+				{:else if section === 'snippets'}
+					<div class="grid gap-3">
+						<div class="flex items-center justify-between">
+							<h3 class="text-sm font-medium">Snippets</h3>
+							<Button size="sm" onclick={openCreateSnippet} disabled={busy}>New snippet</Button>
+						</div>
+						<p class="text-xs text-muted-foreground">
+							Commands kept encrypted in this vault. One is only ever sent to the session that is
+							already open, after you have read it in full and confirmed. {SNIPPET_SECRET_NOTE}
+						</p>
+						{#if snippets.length === 0}
+							<p class="text-xs text-muted-foreground">No snippets yet.</p>
+						{:else}
+							<ul class="grid gap-2">
+								{#each snippets as snippet (snippet.id)}
+									<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
+										<div class="min-w-0">
+											<p class="truncate text-sm font-medium">{snippet.name}</p>
+											<p class="truncate font-mono text-xs text-muted-foreground">
+												{snippetPreview(snippet.content)}
+											</p>
+											<p class="truncate text-xs text-muted-foreground">
+												updated {addedAt(snippet.updatedAt)}
+											</p>
+										</div>
+										<div class="flex shrink-0 gap-2">
+											<Button
+												size="sm"
+												onclick={() => openRunPreview(snippet)}
+												disabled={busy || !canRun}
+												title={canRun
+													? 'Read this command before it is sent'
+													: 'Connect a session first'}
+											>
+												Run
+											</Button>
+											<Button
+												variant="outline"
+												size="sm"
+												onclick={() => openEditSnippet(snippet)}
+												disabled={busy}
+											>
+												Edit
+											</Button>
+											<Button
+												variant="outline"
+												size="sm"
+												onclick={() => (snippetDeleteTarget = snippet)}
+												disabled={busy}
+											>
+												Delete
+											</Button>
+										</div>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</div>
+				{:else if section === 'groups'}
+					<div class="grid gap-3">
+						<div class="flex items-center justify-between">
+							<h3 class="text-sm font-medium">Groups</h3>
+							<Button size="sm" onclick={openCreateGroup} disabled={busy}>New group</Button>
+						</div>
+						{#if groups.length === 0}
+							<p class="text-xs text-muted-foreground">No groups yet.</p>
+						{:else}
+							<ul class="grid gap-2">
+								{#each groups as group (group.id)}
+									<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
+										<p class="truncate text-sm font-medium">{group.name}</p>
+										<div class="flex shrink-0 gap-2">
+											<Button
+												variant="outline"
+												size="sm"
+												onclick={() => openRenameGroup(group)}
+												disabled={busy}
+											>
+												Rename
+											</Button>
+											<Button
+												variant="outline"
+												size="sm"
+												onclick={() => removeGroup(group)}
+												disabled={busy}
+											>
+												Delete
+											</Button>
+										</div>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</div>
+				{:else if section === 'backup'}
+					<div class="grid gap-3">
+						<h3 class="text-sm font-medium">Backup &amp; Restore</h3>
+						<p class="text-xs text-muted-foreground">
+							A backup is one encrypted file, locked with a password you choose for it. It holds
+							every group, host, credential, known host and snippet in this vault, and it can be
+							restored into this vault or into another one with a different master password. It is
+							not a sync: restoring replaces every record in this vault with the ones in the file.
+						</p>
+						<BackupRestore {vaultStatus} {hasLiveSessions} onrestored={refresh} />
+					</div>
+				{:else}
+					<div class="grid gap-3">
+						<div class="flex items-center justify-between">
+							<h3 class="text-sm font-medium">Known hosts</h3>
+						</div>
+						{#if knownHosts.length === 0}
+							<p class="text-xs text-muted-foreground">
+								No host keys are trusted yet. Approving one while connecting adds it here.
+							</p>
+						{:else}
+							<ul class="grid gap-2">
+								{#each knownHosts as known (known.id)}
+									<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
+										<div class="min-w-0">
+											<p class="truncate font-mono text-sm font-medium">{known.hostKeyId}</p>
+											<p class="truncate text-xs text-muted-foreground">
+												{known.keyAlgorithm} · added {addedAt(known.createdAt)}
+											</p>
+											<p class="truncate font-mono text-xs text-muted-foreground">
+												{known.fingerprintSha256}
+											</p>
+										</div>
+										<div class="shrink-0">
+											<Button
+												variant="outline"
+												size="sm"
+												onclick={() => (forgetTarget = known)}
+												disabled={busy}
+											>
+												Forget
+											</Button>
+										</div>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</div>
+				{/if}
+			</CardContent>
+		</Card>
+	{/if}
+</div>
+
+<Dialog open={forgetTarget !== null} onOpenChange={(open) => !open && (forgetTarget = null)}>
+	<DialogContent class="sm:max-w-md">
+		<DialogHeader>
+			<DialogTitle>Forget this host key?</DialogTitle>
+			<DialogDescription>
+				The next connection to this host will ask you to check its fingerprint again. Nothing else
+				is removed.
+			</DialogDescription>
+		</DialogHeader>
+
+		{#if forgetTarget}
+			<dl class="grid gap-2 text-sm">
+				<div class="grid gap-0.5">
+					<dt class="text-xs text-muted-foreground">Host</dt>
+					<dd class="font-mono">{forgetTarget.hostKeyId}</dd>
+				</div>
+				<div class="grid gap-0.5">
+					<dt class="text-xs text-muted-foreground">SHA-256 fingerprint</dt>
+					<dd class="font-mono break-all">{forgetTarget.fingerprintSha256}</dd>
+				</div>
+			</dl>
+		{/if}
+
+		<DialogFooter>
+			<Button variant="outline" onclick={() => (forgetTarget = null)}>Cancel</Button>
+			<Button variant="destructive" onclick={confirmForget} disabled={busy}>Forget</Button>
+		</DialogFooter>
+	</DialogContent>
+</Dialog>
+
+<Dialog bind:open={hostOpen}>
+	<DialogContent class="sm:max-w-md">
+		<DialogHeader>
+			<DialogTitle>{editingHost === null ? 'New host' : 'Edit host'}</DialogTitle>
+			<DialogDescription>
+				The Credential chosen here is the one its Connect button uses. Secrets stay encrypted and
+				are never shown again.
+			</DialogDescription>
+		</DialogHeader>
+
+		<form class="grid gap-3" onsubmit={submitHost}>
+			<div class="grid gap-1.5">
+				<Label for="host-label">Label</Label>
+				<Input id="host-label" bind:value={hostForm.label} disabled={busy} />
+			</div>
+			<div class="grid gap-3 sm:grid-cols-2">
+				<div class="grid gap-1.5">
+					<Label for="host-address">Address</Label>
+					<Input id="host-address" bind:value={hostForm.address} disabled={busy} />
+				</div>
+				<div class="grid gap-1.5">
+					<Label for="host-port">Port</Label>
+					<Input id="host-port" type="number" bind:value={hostForm.port} disabled={busy} />
+				</div>
+			</div>
+			<div class="grid gap-1.5">
+				<Label for="host-username">Username</Label>
+				<Input id="host-username" bind:value={hostForm.username} disabled={busy} />
+			</div>
+			<div class="grid gap-1.5">
+				<Label for="host-group">Group</Label>
+				<Select type="single" bind:value={hostForm.groupId} items={groupOptions} disabled={busy}>
+					<SelectTrigger id="host-group" class="w-full">
+						<SelectValue placeholder="None" />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value={NO_RELATION}>None</SelectItem>
+						{#each groups as group (group.id)}
+							<SelectItem value={group.id}>{group.name}</SelectItem>
+						{/each}
+					</SelectContent>
+				</Select>
+			</div>
+			<div class="grid gap-1.5">
+				<Label for="host-credential">Credential</Label>
+				<Select
+					type="single"
+					bind:value={hostForm.credentialId}
+					items={credentialOptions}
+					disabled={busy}
+				>
+					<SelectTrigger id="host-credential" class="w-full">
+						<SelectValue placeholder="None" />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value={NO_RELATION}>None</SelectItem>
+						{#each credentials as credential (credential.id)}
+							<SelectItem value={credential.id}>{credential.name}</SelectItem>
+						{/each}
+					</SelectContent>
+				</Select>
+			</div>
+
+			<DialogFooter>
+				<Button type="button" variant="outline" onclick={() => (hostOpen = false)}>Cancel</Button>
+				<Button type="submit" disabled={busy}>
+					{editingHost === null ? 'Create host' : 'Save host'}
+				</Button>
+			</DialogFooter>
+		</form>
+	</DialogContent>
+</Dialog>
+
+<Dialog bind:open={groupOpen}>
+	<DialogContent class="sm:max-w-md">
+		<DialogHeader>
+			<DialogTitle>{renamingGroup === null ? 'New group' : 'Rename group'}</DialogTitle>
+			<DialogDescription>Groups keep related hosts together.</DialogDescription>
+		</DialogHeader>
+
+		<form class="grid gap-3" onsubmit={submitGroup}>
+			<div class="grid gap-1.5">
+				<Label for="group-name">Name</Label>
+				<Input id="group-name" bind:value={groupNameInput} disabled={busy} />
+			</div>
+			<DialogFooter>
+				<Button type="button" variant="outline" onclick={() => (groupOpen = false)}>Cancel</Button>
+				<Button type="submit" disabled={busy}>
+					{renamingGroup === null ? 'Create group' : 'Save name'}
+				</Button>
+			</DialogFooter>
+		</form>
+	</DialogContent>
+</Dialog>
+
+<Dialog bind:open={credentialOpen}>
+	<DialogContent class="sm:max-w-md">
+		<DialogHeader>
+			<DialogTitle>
+				{credentialMode === 'create'
+					? 'New credential'
+					: credentialMode === 'rename'
+						? 'Rename credential'
+						: 'Replace secret'}
+			</DialogTitle>
+			<DialogDescription>
+				{#if credentialMode === 'rename'}
+					The stored secret is left exactly as it is.
+				{:else}
+					The secret is encrypted into the vault and is never shown again.
+				{/if}
+			</DialogDescription>
+		</DialogHeader>
+
+		<form class="grid gap-3" onsubmit={submitCredential}>
+			{#if credentialMode !== 'replace'}
+				<div class="grid gap-1.5">
+					<Label for="credential-name">Name</Label>
+					<Input id="credential-name" bind:value={credentialForm.name} disabled={busy} />
+				</div>
+			{/if}
+
+			{#if credentialMode === 'create'}
+				<div class="grid gap-1.5">
+					<Label for="credential-kind">Type</Label>
+					<Select
+						type="single"
+						bind:value={credentialForm.kind}
+						items={credentialKinds}
+						disabled={busy}
+					>
+						<SelectTrigger id="credential-kind" class="w-full">
+							<SelectValue placeholder="Choose a type" />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="password">Password</SelectItem>
+							<SelectItem value="private_key">Private key</SelectItem>
+						</SelectContent>
+					</Select>
+				</div>
+			{/if}
+
+			{#if credentialMode !== 'rename'}
+				{#if credentialForm.kind === 'password'}
+					<div class="grid gap-1.5">
+						<Label for="credential-secret">Password</Label>
+						<Input
+							id="credential-secret"
+							type="password"
+							autocomplete="new-password"
+							bind:value={credentialForm.secret}
+							disabled={busy}
+						/>
+					</div>
+				{:else}
+					<div class="grid gap-1.5">
+						<Label for="credential-secret">Private key (OpenSSH format)</Label>
+						<Textarea
+							id="credential-secret"
+							rows={6}
+							class="font-mono text-xs"
+							placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+							bind:value={credentialForm.secret}
+							disabled={busy}
+						/>
+					</div>
+					<div class="grid gap-1.5">
+						<Label for="credential-passphrase">Passphrase (only if the key is encrypted)</Label>
+						<Input
+							id="credential-passphrase"
+							type="password"
+							autocomplete="new-password"
+							bind:value={credentialForm.passphrase}
+							disabled={busy}
+						/>
+					</div>
+				{/if}
+			{/if}
+
+			<DialogFooter>
+				<Button type="button" variant="outline" onclick={closeCredentialDialog}>Cancel</Button>
+				<Button type="submit" disabled={busy}>
+					{credentialMode === 'create'
+						? 'Create credential'
+						: credentialMode === 'rename'
+							? 'Save name'
+							: 'Replace secret'}
+				</Button>
+			</DialogFooter>
+		</form>
+	</DialogContent>
+</Dialog>
+
+<Dialog bind:open={snippetOpen}>
+	<DialogContent class="sm:max-w-xl">
+		<DialogHeader>
+			<DialogTitle>{editingSnippet === null ? 'New snippet' : 'Edit snippet'}</DialogTitle>
+			<DialogDescription>
+				The command is stored encrypted in this vault and is only sent to a session you run it
+				against, after you confirm the preview. Nothing here runs on its own.
+				{SNIPPET_SECRET_NOTE}
+			</DialogDescription>
+		</DialogHeader>
+
+		<form class="grid gap-3" onsubmit={submitSnippet}>
+			<div class="grid gap-1.5">
+				<Label for="snippet-name">Name</Label>
+				<Input id="snippet-name" bind:value={snippetForm.name} disabled={busy} />
+			</div>
+			<div class="grid gap-1.5">
+				<Label for="snippet-content">Command</Label>
+				<Textarea
+					id="snippet-content"
+					rows={8}
+					class="font-mono text-xs"
+					placeholder="systemctl restart app"
+					bind:value={snippetForm.content}
+					disabled={busy}
+				/>
+				<p class="text-xs text-muted-foreground">
+					More than one line is fine. Termust does not check the syntax: the remote shell decides
+					what the command means.
+				</p>
+			</div>
+
+			<DialogFooter>
+				<Button type="button" variant="outline" onclick={() => (snippetOpen = false)}>
+					Cancel
+				</Button>
+				<Button type="submit" disabled={busy}>
+					{editingSnippet === null ? 'Create snippet' : 'Save snippet'}
+				</Button>
+			</DialogFooter>
+		</form>
+	</DialogContent>
+</Dialog>
+
+<Dialog
+	open={snippetDeleteTarget !== null}
+	onOpenChange={(open) => !open && (snippetDeleteTarget = null)}
+>
+	<DialogContent class="sm:max-w-md">
+		<DialogHeader>
+			<DialogTitle>Delete this snippet?</DialogTitle>
+			<DialogDescription>
+				It disappears from the list and can no longer be read or run. Nothing on the server is
+				touched: a snippet only ever did something when you ran it.
+			</DialogDescription>
+		</DialogHeader>
+
+		{#if snippetDeleteTarget}
+			<p class="truncate text-sm font-medium">{snippetDeleteTarget.name}</p>
+		{/if}
+
+		<DialogFooter>
+			<Button variant="outline" onclick={() => (snippetDeleteTarget = null)}>Cancel</Button>
+			<Button variant="destructive" onclick={confirmDeleteSnippet} disabled={busy}>Delete</Button>
+		</DialogFooter>
+	</DialogContent>
+</Dialog>
+
+<Dialog open={runTarget !== null} onOpenChange={(open) => !open && !running && closeRunPreview()}>
+	<DialogContent class="sm:max-w-2xl">
+		<DialogHeader>
+			<DialogTitle>Run this snippet?</DialogTitle>
+			<DialogDescription>
+				This sends the command to the shell of {runSession?.title ?? 'the tab it was opened for'}.
+				Termust does not read the command itself, so check it here before it goes.
+			</DialogDescription>
+		</DialogHeader>
+
+		{#if runTarget}
+			<div class="grid gap-2">
+				<p class="truncate text-sm font-medium">{runTarget.name}</p>
+				<pre
+					class="max-h-64 overflow-auto rounded-md border bg-muted p-3 font-mono text-xs break-words whitespace-pre-wrap">{runTarget.content}</pre>
+				<p class="text-xs text-amber-500">
+					It is sent as typed input to the shell that is already open.
+				</p>
+			</div>
+		{/if}
+
+		{#if runSession && !canRunTarget}
+			<Alert>
+				<AlertDescription>
+					This preview belongs to {runSession.title}. It is only ever sent to the session it was
+					confirmed for, so switch back to that tab to run it.
+				</AlertDescription>
 			</Alert>
 		{/if}
 
-		{#if section === 'hosts'}
-			<HostWorkspace
-				{hosts}
-				{groups}
-				{credentials}
-				{busy}
-				{vaultStatus}
-				{hostConnecting}
-				onconnect={(host) => onconnect?.(host)}
-				onedit={openEditHost}
-				ondelete={removeHost}
-				oncreate={openCreateHost}
-				onimported={refresh}
-				bind:quickHost
-				bind:quickPort
-				bind:quickUsername
-				bind:quickAuth
-				bind:quickPassword
-				bind:quickPrivateKey
-				bind:quickPassphrase
-				{quickSubmitting}
-				{onquicksubmit}
-				{onquickclear}
-			/>
-		{:else}
-			<Card>
-				<CardContent class="grid gap-4 pt-6">
-					{#if section === 'credentials'}
-						<div class="grid gap-3">
-							<div class="flex items-center justify-between">
-								<h3 class="text-sm font-medium">Credentials</h3>
-								<Button size="sm" onclick={openCreateCredential} disabled={busy}
-									>New credential</Button
-								>
-							</div>
-							{#if credentials.length === 0}
-								<p class="text-xs text-muted-foreground">No saved credentials yet.</p>
-							{:else}
-								<ul class="grid gap-2">
-									{#each credentials as credential (credential.id)}
-										<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
-											<div class="min-w-0">
-												<p class="truncate text-sm font-medium">{credential.name}</p>
-												<p class="truncate text-xs text-muted-foreground">
-													{credential.kind === 'password' ? 'Password' : 'Private key'}
-												</p>
-											</div>
-											<div class="flex shrink-0 gap-2">
-												<Button
-													variant="outline"
-													size="sm"
-													onclick={() => openRenameCredential(credential)}
-													disabled={busy}
-												>
-													Rename
-												</Button>
-												<Button
-													variant="outline"
-													size="sm"
-													onclick={() => openReplaceSecret(credential)}
-													disabled={busy}
-												>
-													Replace secret
-												</Button>
-												<Button
-													variant="outline"
-													size="sm"
-													onclick={() => removeCredential(credential)}
-													disabled={busy}
-												>
-													Delete
-												</Button>
-											</div>
-										</li>
-									{/each}
-								</ul>
-							{/if}
-						</div>
-					{:else if section === 'snippets'}
-						<div class="grid gap-3">
-							<div class="flex items-center justify-between">
-								<h3 class="text-sm font-medium">Snippets</h3>
-								<Button size="sm" onclick={openCreateSnippet} disabled={busy}>New snippet</Button>
-							</div>
-							<p class="text-xs text-muted-foreground">
-								Commands kept encrypted in this vault. One is only ever sent to the session that is
-								already open, after you have read it in full and confirmed. {SNIPPET_SECRET_NOTE}
-							</p>
-							{#if snippets.length === 0}
-								<p class="text-xs text-muted-foreground">No snippets yet.</p>
-							{:else}
-								<ul class="grid gap-2">
-									{#each snippets as snippet (snippet.id)}
-										<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
-											<div class="min-w-0">
-												<p class="truncate text-sm font-medium">{snippet.name}</p>
-												<p class="truncate font-mono text-xs text-muted-foreground">
-													{snippetPreview(snippet.content)}
-												</p>
-												<p class="truncate text-xs text-muted-foreground">
-													updated {addedAt(snippet.updatedAt)}
-												</p>
-											</div>
-											<div class="flex shrink-0 gap-2">
-												<Button
-													size="sm"
-													onclick={() => openRunPreview(snippet)}
-													disabled={busy || !canRun}
-													title={canRun
-														? 'Read this command before it is sent'
-														: 'Connect a session first'}
-												>
-													Run
-												</Button>
-												<Button
-													variant="outline"
-													size="sm"
-													onclick={() => openEditSnippet(snippet)}
-													disabled={busy}
-												>
-													Edit
-												</Button>
-												<Button
-													variant="outline"
-													size="sm"
-													onclick={() => (snippetDeleteTarget = snippet)}
-													disabled={busy}
-												>
-													Delete
-												</Button>
-											</div>
-										</li>
-									{/each}
-								</ul>
-							{/if}
-						</div>
-					{:else if section === 'groups'}
-						<div class="grid gap-3">
-							<div class="flex items-center justify-between">
-								<h3 class="text-sm font-medium">Groups</h3>
-								<Button size="sm" onclick={openCreateGroup} disabled={busy}>New group</Button>
-							</div>
-							{#if groups.length === 0}
-								<p class="text-xs text-muted-foreground">No groups yet.</p>
-							{:else}
-								<ul class="grid gap-2">
-									{#each groups as group (group.id)}
-										<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
-											<p class="truncate text-sm font-medium">{group.name}</p>
-											<div class="flex shrink-0 gap-2">
-												<Button
-													variant="outline"
-													size="sm"
-													onclick={() => openRenameGroup(group)}
-													disabled={busy}
-												>
-													Rename
-												</Button>
-												<Button
-													variant="outline"
-													size="sm"
-													onclick={() => removeGroup(group)}
-													disabled={busy}
-												>
-													Delete
-												</Button>
-											</div>
-										</li>
-									{/each}
-								</ul>
-							{/if}
-						</div>
-					{:else if section === 'backup'}
-						<div class="grid gap-3">
-							<h3 class="text-sm font-medium">Backup &amp; Restore</h3>
-							<p class="text-xs text-muted-foreground">
-								A backup is one encrypted file, locked with a password you choose for it. It holds
-								every group, host, credential, known host and snippet in this vault, and it can be
-								restored into this vault or into another one with a different master password. It is
-								not a sync: restoring replaces every record in this vault with the ones in the file.
-							</p>
-							<BackupRestore {vaultStatus} {hasLiveSessions} onrestored={refresh} />
-						</div>
-					{:else}
-						<div class="grid gap-3">
-							<div class="flex items-center justify-between">
-								<h3 class="text-sm font-medium">Known hosts</h3>
-							</div>
-							{#if knownHosts.length === 0}
-								<p class="text-xs text-muted-foreground">
-									No host keys are trusted yet. Approving one while connecting adds it here.
-								</p>
-							{:else}
-								<ul class="grid gap-2">
-									{#each knownHosts as known (known.id)}
-										<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
-											<div class="min-w-0">
-												<p class="truncate font-mono text-sm font-medium">{known.hostKeyId}</p>
-												<p class="truncate text-xs text-muted-foreground">
-													{known.keyAlgorithm} · added {addedAt(known.createdAt)}
-												</p>
-												<p class="truncate font-mono text-xs text-muted-foreground">
-													{known.fingerprintSha256}
-												</p>
-											</div>
-											<div class="shrink-0">
-												<Button
-													variant="outline"
-													size="sm"
-													onclick={() => (forgetTarget = known)}
-													disabled={busy}
-												>
-													Forget
-												</Button>
-											</div>
-										</li>
-									{/each}
-								</ul>
-							{/if}
-						</div>
-					{/if}
-				</CardContent>
-			</Card>
-		{/if}
-	</div>
-
-	<Dialog open={forgetTarget !== null} onOpenChange={(open) => !open && (forgetTarget = null)}>
-		<DialogContent class="sm:max-w-md">
-			<DialogHeader>
-				<DialogTitle>Forget this host key?</DialogTitle>
-				<DialogDescription>
-					The next connection to this host will ask you to check its fingerprint again. Nothing else
-					is removed.
-				</DialogDescription>
-			</DialogHeader>
-
-			{#if forgetTarget}
-				<dl class="grid gap-2 text-sm">
-					<div class="grid gap-0.5">
-						<dt class="text-xs text-muted-foreground">Host</dt>
-						<dd class="font-mono">{forgetTarget.hostKeyId}</dd>
-					</div>
-					<div class="grid gap-0.5">
-						<dt class="text-xs text-muted-foreground">SHA-256 fingerprint</dt>
-						<dd class="font-mono break-all">{forgetTarget.fingerprintSha256}</dd>
-					</div>
-				</dl>
-			{/if}
-
-			<DialogFooter>
-				<Button variant="outline" onclick={() => (forgetTarget = null)}>Cancel</Button>
-				<Button variant="destructive" onclick={confirmForget} disabled={busy}>Forget</Button>
-			</DialogFooter>
-		</DialogContent>
-	</Dialog>
-
-	<Dialog bind:open={hostOpen}>
-		<DialogContent class="sm:max-w-md">
-			<DialogHeader>
-				<DialogTitle>{editingHost === null ? 'New host' : 'Edit host'}</DialogTitle>
-				<DialogDescription>
-					The Credential chosen here is the one its Connect button uses. Secrets stay encrypted and
-					are never shown again.
-				</DialogDescription>
-			</DialogHeader>
-
-			<form class="grid gap-3" onsubmit={submitHost}>
-				<div class="grid gap-1.5">
-					<Label for="host-label">Label</Label>
-					<Input id="host-label" bind:value={hostForm.label} disabled={busy} />
-				</div>
-				<div class="grid gap-3 sm:grid-cols-2">
-					<div class="grid gap-1.5">
-						<Label for="host-address">Address</Label>
-						<Input id="host-address" bind:value={hostForm.address} disabled={busy} />
-					</div>
-					<div class="grid gap-1.5">
-						<Label for="host-port">Port</Label>
-						<Input id="host-port" type="number" bind:value={hostForm.port} disabled={busy} />
-					</div>
-				</div>
-				<div class="grid gap-1.5">
-					<Label for="host-username">Username</Label>
-					<Input id="host-username" bind:value={hostForm.username} disabled={busy} />
-				</div>
-				<div class="grid gap-1.5">
-					<Label for="host-group">Group</Label>
-					<Select type="single" bind:value={hostForm.groupId} items={groupOptions} disabled={busy}>
-						<SelectTrigger id="host-group" class="w-full">
-							<SelectValue placeholder="None" />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value={NO_RELATION}>None</SelectItem>
-							{#each groups as group (group.id)}
-								<SelectItem value={group.id}>{group.name}</SelectItem>
-							{/each}
-						</SelectContent>
-					</Select>
-				</div>
-				<div class="grid gap-1.5">
-					<Label for="host-credential">Credential</Label>
-					<Select
-						type="single"
-						bind:value={hostForm.credentialId}
-						items={credentialOptions}
-						disabled={busy}
-					>
-						<SelectTrigger id="host-credential" class="w-full">
-							<SelectValue placeholder="None" />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value={NO_RELATION}>None</SelectItem>
-							{#each credentials as credential (credential.id)}
-								<SelectItem value={credential.id}>{credential.name}</SelectItem>
-							{/each}
-						</SelectContent>
-					</Select>
-				</div>
-
-				<DialogFooter>
-					<Button type="button" variant="outline" onclick={() => (hostOpen = false)}>Cancel</Button>
-					<Button type="submit" disabled={busy}>
-						{editingHost === null ? 'Create host' : 'Save host'}
-					</Button>
-				</DialogFooter>
-			</form>
-		</DialogContent>
-	</Dialog>
-
-	<Dialog bind:open={groupOpen}>
-		<DialogContent class="sm:max-w-md">
-			<DialogHeader>
-				<DialogTitle>{renamingGroup === null ? 'New group' : 'Rename group'}</DialogTitle>
-				<DialogDescription>Groups keep related hosts together.</DialogDescription>
-			</DialogHeader>
-
-			<form class="grid gap-3" onsubmit={submitGroup}>
-				<div class="grid gap-1.5">
-					<Label for="group-name">Name</Label>
-					<Input id="group-name" bind:value={groupNameInput} disabled={busy} />
-				</div>
-				<DialogFooter>
-					<Button type="button" variant="outline" onclick={() => (groupOpen = false)}>
-						Cancel
-					</Button>
-					<Button type="submit" disabled={busy}>
-						{renamingGroup === null ? 'Create group' : 'Save name'}
-					</Button>
-				</DialogFooter>
-			</form>
-		</DialogContent>
-	</Dialog>
-
-	<Dialog bind:open={credentialOpen}>
-		<DialogContent class="sm:max-w-md">
-			<DialogHeader>
-				<DialogTitle>
-					{credentialMode === 'create'
-						? 'New credential'
-						: credentialMode === 'rename'
-							? 'Rename credential'
-							: 'Replace secret'}
-				</DialogTitle>
-				<DialogDescription>
-					{#if credentialMode === 'rename'}
-						The stored secret is left exactly as it is.
-					{:else}
-						The secret is encrypted into the vault and is never shown again.
-					{/if}
-				</DialogDescription>
-			</DialogHeader>
-
-			<form class="grid gap-3" onsubmit={submitCredential}>
-				{#if credentialMode !== 'replace'}
-					<div class="grid gap-1.5">
-						<Label for="credential-name">Name</Label>
-						<Input id="credential-name" bind:value={credentialForm.name} disabled={busy} />
-					</div>
-				{/if}
-
-				{#if credentialMode === 'create'}
-					<div class="grid gap-1.5">
-						<Label for="credential-kind">Type</Label>
-						<Select
-							type="single"
-							bind:value={credentialForm.kind}
-							items={credentialKinds}
-							disabled={busy}
-						>
-							<SelectTrigger id="credential-kind" class="w-full">
-								<SelectValue placeholder="Choose a type" />
-							</SelectTrigger>
-							<SelectContent>
-								<SelectItem value="password">Password</SelectItem>
-								<SelectItem value="private_key">Private key</SelectItem>
-							</SelectContent>
-						</Select>
-					</div>
-				{/if}
-
-				{#if credentialMode !== 'rename'}
-					{#if credentialForm.kind === 'password'}
-						<div class="grid gap-1.5">
-							<Label for="credential-secret">Password</Label>
-							<Input
-								id="credential-secret"
-								type="password"
-								autocomplete="new-password"
-								bind:value={credentialForm.secret}
-								disabled={busy}
-							/>
-						</div>
-					{:else}
-						<div class="grid gap-1.5">
-							<Label for="credential-secret">Private key (OpenSSH format)</Label>
-							<Textarea
-								id="credential-secret"
-								rows={6}
-								class="font-mono text-xs"
-								placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-								bind:value={credentialForm.secret}
-								disabled={busy}
-							/>
-						</div>
-						<div class="grid gap-1.5">
-							<Label for="credential-passphrase">Passphrase (only if the key is encrypted)</Label>
-							<Input
-								id="credential-passphrase"
-								type="password"
-								autocomplete="new-password"
-								bind:value={credentialForm.passphrase}
-								disabled={busy}
-							/>
-						</div>
-					{/if}
-				{/if}
-
-				<DialogFooter>
-					<Button type="button" variant="outline" onclick={closeCredentialDialog}>Cancel</Button>
-					<Button type="submit" disabled={busy}>
-						{credentialMode === 'create'
-							? 'Create credential'
-							: credentialMode === 'rename'
-								? 'Save name'
-								: 'Replace secret'}
-					</Button>
-				</DialogFooter>
-			</form>
-		</DialogContent>
-	</Dialog>
-
-	<Dialog bind:open={snippetOpen}>
-		<DialogContent class="sm:max-w-xl">
-			<DialogHeader>
-				<DialogTitle>{editingSnippet === null ? 'New snippet' : 'Edit snippet'}</DialogTitle>
-				<DialogDescription>
-					The command is stored encrypted in this vault and is only sent to a session you run it
-					against, after you confirm the preview. Nothing here runs on its own.
-					{SNIPPET_SECRET_NOTE}
-				</DialogDescription>
-			</DialogHeader>
-
-			<form class="grid gap-3" onsubmit={submitSnippet}>
-				<div class="grid gap-1.5">
-					<Label for="snippet-name">Name</Label>
-					<Input id="snippet-name" bind:value={snippetForm.name} disabled={busy} />
-				</div>
-				<div class="grid gap-1.5">
-					<Label for="snippet-content">Command</Label>
-					<Textarea
-						id="snippet-content"
-						rows={8}
-						class="font-mono text-xs"
-						placeholder="systemctl restart app"
-						bind:value={snippetForm.content}
-						disabled={busy}
-					/>
-					<p class="text-xs text-muted-foreground">
-						More than one line is fine. Termust does not check the syntax: the remote shell decides
-						what the command means.
-					</p>
-				</div>
-
-				<DialogFooter>
-					<Button type="button" variant="outline" onclick={() => (snippetOpen = false)}>
-						Cancel
-					</Button>
-					<Button type="submit" disabled={busy}>
-						{editingSnippet === null ? 'Create snippet' : 'Save snippet'}
-					</Button>
-				</DialogFooter>
-			</form>
-		</DialogContent>
-	</Dialog>
-
-	<Dialog
-		open={snippetDeleteTarget !== null}
-		onOpenChange={(open) => !open && (snippetDeleteTarget = null)}
-	>
-		<DialogContent class="sm:max-w-md">
-			<DialogHeader>
-				<DialogTitle>Delete this snippet?</DialogTitle>
-				<DialogDescription>
-					It disappears from the list and can no longer be read or run. Nothing on the server is
-					touched: a snippet only ever did something when you ran it.
-				</DialogDescription>
-			</DialogHeader>
-
-			{#if snippetDeleteTarget}
-				<p class="truncate text-sm font-medium">{snippetDeleteTarget.name}</p>
-			{/if}
-
-			<DialogFooter>
-				<Button variant="outline" onclick={() => (snippetDeleteTarget = null)}>Cancel</Button>
-				<Button variant="destructive" onclick={confirmDeleteSnippet} disabled={busy}>Delete</Button>
-			</DialogFooter>
-		</DialogContent>
-	</Dialog>
-
-	<Dialog open={runTarget !== null} onOpenChange={(open) => !open && !running && closeRunPreview()}>
-		<DialogContent class="sm:max-w-2xl">
-			<DialogHeader>
-				<DialogTitle>Run this snippet?</DialogTitle>
-				<DialogDescription>
-					This sends the command to the shell of {runSession?.title ?? 'the tab it was opened for'}.
-					Termust does not read the command itself, so check it here before it goes.
-				</DialogDescription>
-			</DialogHeader>
-
-			{#if runTarget}
-				<div class="grid gap-2">
-					<p class="truncate text-sm font-medium">{runTarget.name}</p>
-					<pre
-						class="max-h-64 overflow-auto rounded-md border bg-muted p-3 font-mono text-xs break-words whitespace-pre-wrap">{runTarget.content}</pre>
-					<p class="text-xs text-amber-500">
-						It is sent as typed input to the shell that is already open.
-					</p>
-				</div>
-			{/if}
-
-			{#if runSession && !canRunTarget}
-				<Alert>
-					<AlertDescription>
-						This preview belongs to {runSession.title}. It is only ever sent to the session it was
-						confirmed for, so switch back to that tab to run it.
-					</AlertDescription>
-				</Alert>
-			{/if}
-
-			<DialogFooter>
-				<Button variant="outline" onclick={closeRunPreview} disabled={running}>Cancel</Button>
-				<Button onclick={confirmRunSnippet} disabled={!canRunTarget}>
-					{running ? 'Running…' : 'Run snippet'}
-				</Button>
-			</DialogFooter>
-		</DialogContent>
-	</Dialog>
-{/if}
+		<DialogFooter>
+			<Button variant="outline" onclick={closeRunPreview} disabled={running}>Cancel</Button>
+			<Button onclick={confirmRunSnippet} disabled={!canRunTarget}>
+				{running ? 'Running…' : 'Run snippet'}
+			</Button>
+		</DialogFooter>
+	</DialogContent>
+</Dialog>

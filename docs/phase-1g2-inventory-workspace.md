@@ -175,9 +175,71 @@ Revisi ini menyempurnakan hasil Phase 1G-2 berdasarkan evaluasi visual native de
 - **Secret Hygiene**: Credential (password, private key, passphrase) hanya disimpan dalam memori form komponen root. Saat Quick Connect panel ditutup tanpa submit (atau saat pengguna berpindah ke host lain atau section lain), callback `onquickclear` dipanggil untuk mengosongkan seluruh field rahasia. Nilai non-secret (host, port, username, auth method) tetap dipertahankan untuk kenyamanan pengguna.
 - Tidak ada rahasia yang diteruskan ke HostCard, HostGrid, context state helper, atau disimpan ke persistent storage.
 
-### F. Hal yang Ditunda ke Phase 1G-2R2
+### F. Penyelesaian pada Phase 1G-2R2
 
-- Vault gate dan blur overlay.
-- Pemindahan tombol Lock ke sidebar atau penghapusan `VaultPanel`.
-- Posisi dan layout tombol traffic lights macOS.
-- Active-state styling dan tab indicator pada terminal tab strip.
+Pekerjaan yang sebelumnya ditunda (vault gate, sidebar vault action, pemisahan visual terminal tab, dan posisi traffic lights) telah diselesaikan pada Phase 1G-2R2 di bawah ini.
+
+---
+
+## 9. Phase 1G-2R2 Updates: Vault Gate, Sidebar Vault Actions, and Native Shell Polish
+
+Phase ini menutup revisi UX Phase 1G-2:
+
+### A. Ownership Status Vault di Root
+
+- Root orchestrator `src/routes/+page.svelte` bertindak sebagai pemilik tunggal `vaultStatus`.
+- Initial status diperiksa saat `onMount` secara asinkron tanpa memblokir listener lifecycle SSH.
+- Menghilangkan `VaultPanel` (card Local vault lama di inventory) dan menghapus file `vault-panel.svelte`.
+- Kontainer Inventory Workspace tidak lagi dibatasi oleh `max-w-5xl`, sehingga toolbar, grid host, dan context panel dapat memanfaatkan lebar layar penuh secara optimal.
+
+### B. State Matrix dan Behavior Vault Gate (`vault-gate.svelte`)
+
+- Gate ditampilkan menggunakan dialog blocking dengan focus trap dan backdrop blur ringan (`bg-black/60 backdrop-blur-sm`).
+- Pengguna tidak dapat menutup gate dengan tombol Escape atau klik luar.
+- **State Matrix**:
+  - `status === undefined` (Checking): Menampilkan status checking dengan spinner. Jika pengecekan gagal, menampilkan pesan error dan tombol Retry. Tombol bypass tidak ditampilkan sebelum status diketahui.
+  - `status === 'uninitialized'`: Menampilkan form pembuatan vault dengan Master Password dan Confirm Master Password. Tombol aksi: `Create Vault` (primary) dan `Continue with Quick Connect` (secondary).
+  - `status === 'locked'`: Menampilkan form unlock dengan Master Password. Tombol aksi: `Unlock` (primary) dan `Continue with Quick Connect` (secondary).
+  - `status === 'unlocked'`: Gate tertutup otomatis.
+  - `vaultGateDismissed === true`: Gate ditutup sementara untuk sesi runtime aplikasi saat ini.
+- **Continue with Quick Connect**:
+  - Pengguna dapat melewati gate tanpa unlock atau create vault.
+  - `vaultStatus` tetap `locked` atau `uninitialized`.
+  - Saved inventory tetap tidak dapat diakses dan tidak didekripsi.
+  - Membuka context panel Quick Connect secara langsung di sisi kanan workspace.
+  - Bypass hanya berlaku di memori frontend selama aplikasi berjalan.
+
+### C. Sidebar Vault Actions
+
+- Area status vault di bagian bawah `app-sidebar.svelte` kini interaktif:
+  - `unlocked`: Teks `Vault unlocked` dan tombol `Lock`.
+  - `locked`: Teks `Vault locked` dan tombol `Unlock`.
+  - `uninitialized`: Teks `No vault` dan tombol `Create`.
+  - `checking`: Teks `Checking…` dan tombol dinonaktifkan.
+  - Pada mode collapsed, tombol tampil sebagai icon-only button dengan `aria-label` dan `title`.
+- Menggunakan typed callbacks `onlockvault` dan `onopenvault` tanpa pemanggilan IPC langsung dari sidebar.
+
+### D. Lock Behavior Terhadap Live Session
+
+- Menjalankan `lockVault()` dari root orchestrator.
+- Ketika berhasil, `vaultStatus` menjadi `'locked'`, `vaultGateDismissed = false`, dan gate blocking kembali tampil.
+- Seluruh daftar decrypted inventory dan form secret dibersihkan seketika.
+- Sesi SSH yang sedang berjalan **tidak diputus** dan terminal tabs beserta scrollback tetap utuh.
+
+### E. Visual Terminal Tab Selection saat Hosts Aktif
+
+- Helper murni `getVisualActiveSessionId` memetakan tab yang aktif:
+  - Saat `activeWorkspace === 'inventory'`: Visual selection menjadi `null` dan ringkasan title bar berstatus idle, sehingga tab terminal tidak terlihat aktif bersamaan dengan Hosts.
+  - `activeSessionId` internal tetap dipertahankan.
+  - Saat pengguna kembali ke workspace Terminal atau mengklik tab sesi, tab tersebut langsung kembali terpilih secara visual.
+
+### F. Posisi Traffic Lights macOS
+
+- Menambahkan konfigurasi eksplisit `trafficLightPosition: { "x": 14, "y": 15 }` pada `app.windows[0]` di `src-tauri/tauri.conf.json`.
+- Memastikan tombol traffic lights macOS terpusat secara vertikal pada title bar 44px.
+
+### G. Pekerjaan yang Masih Ditunda (Phase 1G-3 ke atas)
+
+- **Phase 1G-3 (Terminal Workspace)**: Snippet runner tools panel di sebelah kanan terminal workspace, status bar koneksi terminal.
+- **Phase 1G-4 (Forms dan Dialogs)**: Redesign modal dialog Host Create/Edit dan Credential Create/Edit.
+- **Phase 1G-5 (Responsive dan Mobile)**: Drawer sheet navigasi mobile penuh.

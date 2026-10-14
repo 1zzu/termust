@@ -1,8 +1,13 @@
 <script lang="ts">
-	import type { CredentialSummary, Group, Host } from '#lib/inventory';
-	import HostCard from './host-card.svelte';
+	import LockIcon from '@lucide/svelte/icons/lock';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import ServerIcon from '@lucide/svelte/icons/server';
+	import ShieldAlertIcon from '@lucide/svelte/icons/shield-alert';
+
+	import { Button } from '#lib/components/ui/button';
+	import type { CredentialSummary, Group, Host } from '#lib/inventory';
+	import type { VaultStatus } from '#lib/vault';
+	import HostCard from './host-card.svelte';
 
 	let {
 		hosts,
@@ -11,9 +16,11 @@
 		credentials,
 		selectedHostId = null,
 		busy = false,
+		vaultStatus,
 		hostConnecting,
 		onselect,
-		onconnect
+		onconnect,
+		onopenvault
 	}: {
 		hosts: Host[];
 		totalHostCount: number;
@@ -21,9 +28,11 @@
 		credentials: CredentialSummary[];
 		selectedHostId?: string | null;
 		busy?: boolean;
+		vaultStatus?: VaultStatus;
 		hostConnecting: (hostId: string) => boolean;
 		onselect: (host: Host) => void;
 		onconnect: (host: Host) => void;
+		onopenvault?: () => void;
 	} = $props();
 
 	function getGroupName(groupId: string | null): string {
@@ -35,7 +44,39 @@
 	}
 </script>
 
-{#if totalHostCount === 0}
+{#if vaultStatus === 'locked'}
+	<div
+		class="flex flex-col items-center justify-center rounded-lg border border-dashed border-border/80 p-8 text-center"
+		role="status"
+	>
+		<LockIcon class="size-10 text-muted-foreground/50" />
+		<h4 class="mt-3 text-sm font-medium text-foreground">Saved inventory is locked</h4>
+		<p class="mt-1 max-w-sm text-xs text-muted-foreground">
+			Unlock the local vault to access saved hosts and credentials.
+		</p>
+		{#if onopenvault}
+			<Button variant="outline" size="sm" class="mt-4 text-xs" onclick={onopenvault}>
+				Unlock Vault
+			</Button>
+		{/if}
+	</div>
+{:else if vaultStatus === 'uninitialized'}
+	<div
+		class="flex flex-col items-center justify-center rounded-lg border border-dashed border-border/80 p-8 text-center"
+		role="status"
+	>
+		<ShieldAlertIcon class="size-10 text-muted-foreground/50" />
+		<h4 class="mt-3 text-sm font-medium text-foreground">No local vault yet</h4>
+		<p class="mt-1 max-w-sm text-xs text-muted-foreground">
+			Create a vault to save encrypted hosts and credentials.
+		</p>
+		{#if onopenvault}
+			<Button variant="outline" size="sm" class="mt-4 text-xs" onclick={onopenvault}>
+				Create Vault
+			</Button>
+		{/if}
+	</div>
+{:else if totalHostCount === 0}
 	<div
 		class="flex flex-col items-center justify-center rounded-lg border border-dashed border-border/80 p-8 text-center"
 		role="status"

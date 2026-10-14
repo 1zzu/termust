@@ -9,7 +9,7 @@
 	import InventoryPanel from '#lib/components/inventory-panel.svelte';
 	// The component is aliased: `TerminalSession` is the session descriptor type.
 	import TerminalSessionPane from '#lib/components/terminal-session.svelte';
-	import VaultPanel from '#lib/components/vault-panel.svelte';
+	import VaultGate from '#lib/components/vault/vault-gate.svelte';
 	import { Button } from '#lib/components/ui/button';
 	import {
 		Dialog,
@@ -43,7 +43,8 @@
 	} from '#lib/session-tabs';
 	import type { Host } from '#lib/inventory';
 	import type { AuthMethod } from '#lib/types';
-	import type { VaultStatus } from '#lib/vault';
+	import { lockVault, vaultStatus as getVaultStatus, type VaultStatus } from '#lib/vault';
+	import { isVaultGateVisible } from '#lib/components/vault/vault-gate-state';
 
 	type Workspace = 'inventory' | 'terminal';
 
@@ -52,9 +53,13 @@
 	/** Whether the left sidebar navigation rail is collapsed. */
 	let sidebarCollapsed = $state(false);
 
-	// The vault state lives here so the saved inventory appears and disappears
-	// with it; the vault panel owns the password fields themselves.
+	// The root owns the vault status and whether the blocking gate is dismissed for bypass.
 	let vaultStatus = $state<VaultStatus | undefined>(undefined);
+	let vaultGateDismissed = $state(false);
+	let openQuickConnect = $state(false);
+	let vaultError = $state('');
+
+	const showVaultGate = $derived(isVaultGateVisible(vaultStatus, vaultGateDismissed));
 
 	// The Quick Connect form. Its credentials stay in these fields and are never
 	// copied into a session.
@@ -137,6 +142,7 @@
 
 	onMount(() => {
 		lifecycle.attach();
+		void checkVaultStatus();
 
 		return () => {
 			// The window is going away. Pending starts are cancelled and every
@@ -145,6 +151,42 @@
 			void lifecycle.teardown();
 		};
 	});
+
+	async function checkVaultStatus() {
+		vaultError = '';
+		try {
+			vaultStatus = await getVaultStatus();
+		} catch (error) {
+			vaultError = errorMessage(error);
+		}
+	}
+
+	function handleVaultUnlocked(nextStatus: VaultStatus) {
+		vaultStatus = nextStatus;
+		vaultGateDismissed = false;
+		vaultError = '';
+	}
+
+	function handleContinueQuickConnect() {
+		vaultGateDismissed = true;
+		activeWorkspace = 'inventory';
+		openQuickConnect = true;
+	}
+
+	async function handleLockVault() {
+		try {
+			const next = await lockVault();
+			vaultStatus = next;
+			vaultGateDismissed = false;
+			clearCredentials();
+		} catch (error) {
+			vaultError = errorMessage(error);
+		}
+	}
+
+	function handleOpenVaultGate() {
+		vaultGateDismissed = false;
+	}
 
 	// --- the Quick Connect form ------------------------------------------
 
@@ -291,7 +333,9 @@
 			sessionCount={sessions.length}
 			{vaultStatus}
 			ontogglecollapse={() => (sidebarCollapsed = !sidebarCollapsed)}
-			onnavigate={(workspace) => (activeWorkspace = workspace)}
+			onnavigate={(workspace: Workspace) => (activeWorkspace = workspace)}
+			onlockvault={handleLockVault}
+			onopenvault={handleOpenVaultGate}
 		/>
 	{/snippet}
 
@@ -309,9 +353,7 @@
 		<div class="relative min-h-0 flex-1 overflow-hidden">
 			<!-- Inventory Workspace (kept mounted in DOM) -->
 			<div class="h-full w-full overflow-y-auto p-4" class:hidden={activeWorkspace !== 'inventory'}>
-				<div class="mx-auto flex max-w-5xl flex-col gap-4">
-					<VaultPanel bind:status={vaultStatus} />
-
+				<div class="flex flex-col gap-4">
 					<InventoryPanel
 						{vaultStatus}
 						sessionStatus={activeSession?.status ?? 'idle'}
@@ -330,6 +372,8 @@
 						{quickSubmitting}
 						onquicksubmit={handleSubmit}
 						onquickclear={clearCredentials}
+						bind:openQuickConnect
+						onopenvault={handleOpenVaultGate}
 					/>
 
 					{#if activeSession?.errorMessage}
@@ -431,3 +475,12 @@
 		</DialogFooter>
 	</DialogContent>
 </Dialog>
+
+<VaultGate
+	status={vaultStatus}
+	open={showVaultGate}
+	checkError={vaultError}
+	onunlocked={handleVaultUnlocked}
+	oncontinue={handleContinueQuickConnect}
+	onretry={checkVaultStatus}
+/>

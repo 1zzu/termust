@@ -48,7 +48,9 @@
 		quickPassphrase = $bindable(''),
 		quickSubmitting = false,
 		onquicksubmit,
-		onquickclear
+		onquickclear,
+		openQuickConnect = $bindable(false),
+		onopenvault
 	}: {
 		hosts: Host[];
 		groups: Group[];
@@ -71,11 +73,20 @@
 		quickSubmitting?: boolean;
 		onquicksubmit?: (event: SubmitEvent) => void;
 		onquickclear?: () => void;
+		openQuickConnect?: boolean;
+		onopenvault?: () => void;
 	} = $props();
 
 	let searchQuery = $state('');
 	let selectedGroupId = $state<string>(ALL_GROUPS_FILTER);
 	let contextState = $state<InventoryContext>(null);
+
+	$effect(() => {
+		if (openQuickConnect) {
+			contextState = { kind: 'quick-connect' };
+			openQuickConnect = false;
+		}
+	});
 
 	const groupFilterOptions = $derived([
 		{ value: ALL_GROUPS_FILTER, label: 'All groups' },
@@ -169,6 +180,7 @@
 				bind:value={searchQuery}
 				class="h-8 pl-8 text-xs"
 				aria-label="Search hosts"
+				disabled={busy || vaultStatus !== 'unlocked'}
 			/>
 		</div>
 
@@ -187,7 +199,12 @@
 			</span>
 
 			<!-- Group filter -->
-			<Select type="single" bind:value={selectedGroupId} items={groupFilterOptions} disabled={busy}>
+			<Select
+				type="single"
+				bind:value={selectedGroupId}
+				items={groupFilterOptions}
+				disabled={busy || vaultStatus !== 'unlocked'}
+			>
 				<SelectTrigger id="group-filter" class="h-8 w-[140px] text-xs" aria-label="Filter by group">
 					<SelectValue placeholder="All groups" />
 				</SelectTrigger>
@@ -215,7 +232,12 @@
 			<ImportOpensshDialog {vaultStatus} {onimported} />
 
 			<!-- New Host -->
-			<Button size="sm" class="h-8 text-xs" onclick={oncreate} disabled={busy}>
+			<Button
+				size="sm"
+				class="h-8 text-xs"
+				onclick={oncreate}
+				disabled={busy || vaultStatus !== 'unlocked'}
+			>
 				<PlusIcon data-icon="inline-start" />
 				New host
 			</Button>
@@ -232,9 +254,11 @@
 				{credentials}
 				{selectedHostId}
 				{busy}
+				{vaultStatus}
 				{hostConnecting}
 				onselect={handleSelectHost}
 				{onconnect}
+				{onopenvault}
 			/>
 		</div>
 

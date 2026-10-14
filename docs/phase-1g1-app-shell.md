@@ -210,3 +210,26 @@ Checklist ini wajib diverifikasi oleh manusia pada aplikasi native yang berjalan
 - [ ] Resize window pada ukuran minimum tidak memotong kontrol penting.
 - [ ] Windows/Linux tetap menggunakan native decorations.
 ```
+
+---
+
+## 9. Phase 1G-2R2 Native Shell Polish Updates
+
+Pembaruan berikut diterapkan untuk menyempurnakan shell native pada Phase 1G-2R2:
+
+1. **Interactive Vault Actions di Sidebar**:
+   - Status vault di bagian bawah sidebar tidak lagi pasif.
+   - Saat `unlocked`: Menampilkan teks `Vault unlocked` dan tombol `Lock`. Pada mode collapsed, tampil sebagai icon button dengan `aria-label="Lock vault"` dan `title="Lock vault"`.
+   - Saat `locked`: Menampilkan teks `Vault locked` dan tombol `Unlock`. Pada mode collapsed, tampil sebagai icon button dengan `aria-label="Unlock vault"` dan `title="Unlock vault"`.
+   - Saat `uninitialized`: Menampilkan teks `No vault` dan tombol `Create`. Pada mode collapsed, tampil sebagai icon button dengan `aria-label="Create vault"` dan `title="Create vault"`.
+   - Saat `undefined` (checking): Menampilkan status checking dengan spinner dan tombol dinonaktifkan.
+   - Sidebar tidak memanggil IPC backend secara langsung, melainkan meneruskan callback `onlockvault` dan `onopenvault` ke root orchestrator.
+
+2. **Pemisahan Workspace State dan Visual Selected Tab**:
+   - Memperbaiki bug visual di mana tab sesi SSH terakhir tetap terlihat terpilih saat pengguna sedang membuka workspace Hosts.
+   - Menggunakan helper murni `getVisualActiveSessionId`: saat `activeWorkspace === 'inventory'`, `AppTitlebar` meneruskan `visualActiveSessionId = null` ke `SessionTabStrip` dan menampilkan status idle pada ringkasan titlebar.
+   - Underlying `activeSessionId` internal tetap dipertahankan. Saat pengguna kembali ke workspace Terminal atau mengklik salah satu tab sesi, tab tersebut langsung kembali aktif dan terpilih secara visual tanpa kehilangan scrollback terminal.
+
+3. **Posisi Traffic Lights macOS**:
+   - Menambahkan konfigurasi eksplisit `trafficLightPosition: { "x": 14, "y": 15 }` di `src-tauri/tauri.conf.json` pada konfigurasi window utama.
+   - Memastikan tombol traffic lights macOS terpusat secara vertikal mendekati garis tengah titlebar 44px dengan safe area 80px yang sudah ada.

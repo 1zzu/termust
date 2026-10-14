@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Loader2Icon from '@lucide/svelte/icons/loader-2';
 	import PanelLeftCloseIcon from '@lucide/svelte/icons/panel-left-close';
 	import PanelLeftOpenIcon from '@lucide/svelte/icons/panel-left-open';
 	import ServerIcon from '@lucide/svelte/icons/server';
@@ -13,7 +14,7 @@
 	 * Desktop app sidebar navigation.
 	 *
 	 * Provides collapsible navigation between Hosts (Inventory) and Terminal workspaces,
-	 * along with a passive vault status summary at the bottom.
+	 * along with vault status and interactive actions at the bottom.
 	 */
 	let {
 		activeWorkspace = 'inventory',
@@ -21,7 +22,9 @@
 		sessionCount = 0,
 		vaultStatus,
 		ontogglecollapse,
-		onnavigate
+		onnavigate,
+		onlockvault,
+		onopenvault
 	}: {
 		activeWorkspace?: 'inventory' | 'terminal';
 		collapsed?: boolean;
@@ -29,6 +32,8 @@
 		vaultStatus?: VaultStatus;
 		ontogglecollapse: () => void;
 		onnavigate: (workspace: 'inventory' | 'terminal') => void;
+		onlockvault?: () => void;
+		onopenvault?: () => void;
 	} = $props();
 </script>
 
@@ -109,27 +114,124 @@
 		</button>
 	</nav>
 
-	<!-- Passive vault status display -->
-	{#if vaultStatus}
+	<!-- Interactive vault status and actions -->
+	{#if !collapsed}
 		<div
-			class="flex items-center border-t border-border/50 p-2 text-xs text-muted-foreground"
-			class:justify-center={collapsed}
-			class:gap-2={!collapsed}
-			title={vaultStatus === 'unlocked'
-				? 'Vault unlocked'
-				: vaultStatus === 'locked'
-					? 'Vault locked'
-					: 'No vault initialized'}
+			class="flex items-center justify-between border-t border-border/50 p-2 text-xs text-muted-foreground"
 		>
 			{#if vaultStatus === 'unlocked'}
-				<ShieldCheckIcon class="size-4 shrink-0 text-status-connected" aria-hidden="true" />
-				<span class={collapsed ? 'sr-only' : 'truncate text-[11px]'}>Vault unlocked</span>
+				<div class="flex min-w-0 items-center gap-1.5" title="Vault unlocked">
+					<ShieldCheckIcon class="size-4 shrink-0 text-status-connected" aria-hidden="true" />
+					<span class="truncate text-[11px] font-medium text-foreground">Vault unlocked</span>
+				</div>
+				<Button
+					variant="ghost"
+					size="sm"
+					class="h-6 px-2 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+					onclick={onlockvault}
+					title="Lock vault"
+					aria-label="Lock vault"
+				>
+					Lock
+				</Button>
 			{:else if vaultStatus === 'locked'}
-				<ShieldAlertIcon class="size-4 shrink-0 text-status-connecting" aria-hidden="true" />
-				<span class={collapsed ? 'sr-only' : 'truncate text-[11px]'}>Vault locked</span>
+				<div class="flex min-w-0 items-center gap-1.5" title="Vault locked">
+					<ShieldAlertIcon class="size-4 shrink-0 text-status-connecting" aria-hidden="true" />
+					<span class="truncate text-[11px] font-medium text-foreground">Vault locked</span>
+				</div>
+				<Button
+					variant="outline"
+					size="sm"
+					class="h-6 px-2 text-[11px] font-medium"
+					onclick={onopenvault}
+					title="Unlock vault"
+					aria-label="Unlock vault"
+				>
+					Unlock
+				</Button>
+			{:else if vaultStatus === 'uninitialized'}
+				<div class="flex min-w-0 items-center gap-1.5" title="No vault">
+					<ShieldAlertIcon class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+					<span class="truncate text-[11px] font-medium text-foreground">No vault</span>
+				</div>
+				<Button
+					variant="outline"
+					size="sm"
+					class="h-6 px-2 text-[11px] font-medium"
+					onclick={onopenvault}
+					title="Create vault"
+					aria-label="Create vault"
+				>
+					Create
+				</Button>
 			{:else}
-				<ShieldAlertIcon class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-				<span class={collapsed ? 'sr-only' : 'truncate text-[11px]'}>No vault</span>
+				<div class="flex min-w-0 items-center gap-1.5" title="Checking vault status">
+					<Loader2Icon
+						class="size-4 shrink-0 animate-spin text-muted-foreground"
+						aria-hidden="true"
+					/>
+					<span class="truncate text-[11px]">Checking…</span>
+				</div>
+				<Button
+					variant="ghost"
+					size="sm"
+					class="h-6 px-2 text-[11px] text-muted-foreground"
+					disabled
+					title="Checking vault status"
+					aria-label="Checking vault status"
+				>
+					Check
+				</Button>
+			{/if}
+		</div>
+	{:else}
+		<div
+			class="flex items-center justify-center border-t border-border/50 p-2 text-xs text-muted-foreground"
+		>
+			{#if vaultStatus === 'unlocked'}
+				<Button
+					variant="ghost"
+					size="icon-xs"
+					class="size-7 text-status-connected hover:text-foreground"
+					onclick={onlockvault}
+					aria-label="Lock vault"
+					title="Lock vault"
+				>
+					<ShieldCheckIcon class="size-4" aria-hidden="true" />
+				</Button>
+			{:else if vaultStatus === 'locked'}
+				<Button
+					variant="ghost"
+					size="icon-xs"
+					class="size-7 text-status-connecting hover:text-foreground"
+					onclick={onopenvault}
+					aria-label="Unlock vault"
+					title="Unlock vault"
+				>
+					<ShieldAlertIcon class="size-4" aria-hidden="true" />
+				</Button>
+			{:else if vaultStatus === 'uninitialized'}
+				<Button
+					variant="ghost"
+					size="icon-xs"
+					class="size-7 text-muted-foreground hover:text-foreground"
+					onclick={onopenvault}
+					aria-label="Create vault"
+					title="Create vault"
+				>
+					<ShieldAlertIcon class="size-4" aria-hidden="true" />
+				</Button>
+			{:else}
+				<Button
+					variant="ghost"
+					size="icon-xs"
+					class="size-7 text-muted-foreground"
+					disabled
+					aria-label="Checking vault status"
+					title="Checking vault status"
+				>
+					<Loader2Icon class="size-4 animate-spin" aria-hidden="true" />
+				</Button>
 			{/if}
 		</div>
 	{/if}
