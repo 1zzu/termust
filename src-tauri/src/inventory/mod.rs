@@ -36,13 +36,18 @@ use model::{CredentialSummary, Group, KnownHost};
 pub(crate) use model::{Credential, CredentialSecret, Host, HostInput, KnownKey};
 pub(crate) use service::{credential_for_host, find_known_host, remember_known_host};
 
-/// The service calls a test needs to set up a host and its credential the way
-/// the commands would. Test-only, and renamed, because the commands above
+/// The service calls other parts of the crate need: the OpenSSH import creates a
+/// host through the same validation the host form uses, and reads the saved
+/// hosts the same way a command does. Renamed, because the commands above
 /// already own these names.
+pub(crate) use service::{create_host as create_host_record, list_hosts as list_host_records};
+
+/// The service calls a test needs to set up a record the way the commands would.
+/// Test-only, and renamed for the same reason.
 #[cfg(test)]
 pub(crate) use service::{
-    create_host as create_host_record, create_password_credential as create_password_record,
-    create_private_key_credential as create_private_key_record,
+    create_group as create_group_record, create_password_credential as create_password_record,
+    create_private_key_credential as create_private_key_record, update_host as update_host_record,
 };
 
 /// Everything an inventory operation can fail with.

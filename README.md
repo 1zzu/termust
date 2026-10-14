@@ -86,6 +86,9 @@ packaging, bukan kegagalan kode.
 - **Encrypted snippets (Phase 1C).** Snippet perintah SSH yang disimpan terenkripsi di vault yang
   sama, dikelola dari UI, selalu ditampilkan lengkap sebelum dijalankan, dan hanya dikirim ke session
   SSH yang sudah aktif setelah pengguna menekan tombol konfirmasi. Lihat bagian _Snippets_.
+- **Import Host dari basic OpenSSH config (Phase 1D).** Subset kecil yang jujur: `Host`, `HostName`,
+  `User`, dan `Port` dari file config atau teks yang ditempel, selalu lewat preview dan konfirmasi,
+  tanpa membaca key atau file lain. Lihat bagian _Import OpenSSH config_.
 - **Quick Connect.** Form koneksi langsung tanpa menyimpan host: host atau IP, port (default 22),
   username, pilihan autentikasi, dan kredensial sesuai pilihan. Form ini tetap terpisah dan tidak
   memakai saved Host maupun saved Credential.
@@ -225,11 +228,43 @@ tidak punya relasi ke Host, Group, atau Credential.
 Batas ukuran, validasi, dan bentuk payload-nya ada di
 [`docs/local-data-model-v1.md`](docs/local-data-model-v1.md).
 
+## Import OpenSSH config (Phase 1D)
+
+Import Host dari subset dasar OpenSSH client config. Ini **bukan** parser OpenSSH yang kompatibel
+penuh: yang dibaca adalah `Host`, `HostName`, `User`, dan `Port`, satu alias literal per block,
+dan seluruh directive lain dilaporkan sebagai catatan pada barisnya, bukan ditafsirkan diam-diam.
+
+- Parser berada di Rust, murni terhadap input-nya: tidak membuka file, tidak menjalankan proses,
+  tidak membaca environment, tidak melakukan DNS lookup, dan tidak membuka koneksi jaringan.
+- `preview_openssh_config` menerima `{ content }` dan tidak menulis apa pun. `import_openssh_hosts`
+  menerima `{ content, selectedEntryIndexes }`, memparse ulang content itu dengan parser yang sama,
+  dan hanya membuat Host untuk entry berstatus `ready` yang dipilih. Field lain ditolak
+  (`deny_unknown_fields`), termasuk path — jadi tidak ada file yang dapat ditunjuk dari config atau
+  dari frontend.
+- `IdentityFile`, `CertificateFile`, `IdentityAgent`, dan `Include` tidak pernah dibaca dan tidak
+  pernah diikuti. Import tidak membuat Credential, tidak membuat Group, tidak menimpa Host yang ada,
+  dan tidak menghapus apa pun: Host hasil import punya `credentialId = null` sampai pengguna
+  mengeditnya.
+- Duplicate detection memakai identity ternormalisasi `address + port + username`, jadi mengimpor
+  file yang sama dua kali tidak membuat Host kedua. Tombstone tidak dianggap Host aktif, dan label
+  yang sama dengan target berbeda menambah Host baru, bukan menimpa yang lama.
+- Import **tidak atomic**: Host ditulis satu per satu lewat service Host yang sama, dan hasil per
+  entry (`imported`, `skipped`, `failed`) dilaporkan apa adanya. Mengulang import yang sama aman.
+- Config maksimum 1 MiB, divalidasi di frontend dan diulang di backend. Content tidak pernah masuk
+  `localStorage` atau log, dan dibuang dari state saat dialog ditutup, import selesai, atau vault
+  dikunci.
+
+Subset sintaks, aturan duplicate, batas keamanan, dan langkah pemakaiannya ada di
+[`docs/openssh-import-v1.md`](docs/openssh-import-v1.md). Model Host tidak berubah sama sekali:
+lihat [`docs/local-data-model-v1.md`](docs/local-data-model-v1.md).
+
 ## Yang sengaja belum dibuat
 
 Multi-tab atau multi-sesi terminal, split pane, reconnect otomatis, session restore, auto-run
-command, SSH agent, certificate, keyboard-interactive, credential prompt fallback, import OpenSSH
-config, import `known_hosts` OpenSSH, wildcard host, jump host, SFTP, port forwarding, tags, notes,
+command, SSH agent, certificate, keyboard-interactive, credential prompt fallback, parser OpenSSH
+lengkap (`Match`, `Include`, wildcard, `Host *` default, multiple alias per block), import
+`IdentityFile` atau private key dari config, import `known_hosts` OpenSSH, wildcard host, jump host,
+menulis atau meng-export config OpenSSH, SFTP, port forwarding, tags, notes,
 search, snippet variables, snippet tags, snippet folders, snippet history, snippet sharing atau sync,
 backup/export/import, auto-lock timer, keychain/biometric unlock, sinkronisasi,
 enkripsi E2EE lintas perangkat, akun, backend Axum/self-hosted, web SSH relay, mobile UI, tim dan
@@ -263,8 +298,9 @@ Argon2id yang ringan, jadi tidak pernah menyentuh database atau app data penggun
 
 Test yang menyentuh Tauri command (`connect_ssh`, `start_saved_ssh`, `list_known_hosts`,
 `forget_known_host`, `list_snippets`, `create_snippet`, `update_snippet`, `delete_snippet`,
-`run_snippet`) memakai mock runtime milik Tauri, sehingga nama command, nama argument, dan bentuk
-payload yang diterima frontend diuji lewat dispatch IPC yang sebenarnya — bukan lewat salinannya.
+`run_snippet`, `preview_openssh_config`, `import_openssh_hosts`) memakai mock runtime milik Tauri,
+sehingga nama command, nama argument, dan bentuk payload yang diterima frontend diuji lewat dispatch
+IPC yang sebenarnya — bukan lewat salinannya.
 Termasuk bahwa `start_saved_ssh` menolak payload yang mencoba membawa password, private key,
 passphrase, address, atau credential id, dan bahwa `run_snippet` hanya menerima `sessionId` dan
 `snippetId`: payload yang mencoba membawa `content`, `command`, atau field lain ditolak, bukan
@@ -280,7 +316,11 @@ tanpa prompt host key setelah vault dibuka ulang, serta membuktikan password sal
 berubah gagal tanpa mengulang secret di pesan error. Untuk Phase 1C, `live_snippet_runs_on_the_remote_shell`
 menyimpan snippet ke vault sementara, membuka session sungguhan, menyalurkan snippet lewat jalur input
 yang sama dengan aplikasi, dan membuktikan shell jarak jauh benar-benar menjalankannya — termasuk
-snippet dua baris — lalu session itu masih menerima input keyboard dan diputus dengan bersih.
+snippet dua baris — lalu session itu masih menerima input keyboard dan diputus dengan bersih. Untuk
+Phase 1D, `live_imported_host_connects_after_a_credential_is_linked` mengimpor config yang menunjuk
+server itu, membuktikan Host hasil import belum punya Credential, membuat Credential lewat service
+normal, menautkannya ke Host tersebut, lalu membuka shell dan menjalankan command marker lewat jalur
+saved Host yang sama seperti Host biasa.
 Semuanya diabaikan secara default dan hanya berjalan bila diminta:
 
 ```sh

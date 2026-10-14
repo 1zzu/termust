@@ -4,6 +4,7 @@
 //! commands it needs and keeps the session state alive between calls.
 
 mod inventory;
+mod openssh;
 mod snippets;
 mod ssh;
 // The vault is a self-contained core the app builds on; keeping it public lets
@@ -116,7 +117,9 @@ pub fn run() {
             snippets::create_snippet,
             snippets::update_snippet,
             snippets::delete_snippet,
-            snippets::run_snippet
+            snippets::run_snippet,
+            openssh::preview_openssh_config,
+            openssh::import_openssh_hosts
         ])
         .run(tauri::generate_context!());
 
@@ -848,6 +851,372 @@ mod tests {
                 !error.to_string().contains(SNIPPET_NAME),
                 "{why} leaked the name into {error}"
             );
+        }
+    }
+
+    /// Markers that must never appear in an answer. They are the values of the
+    /// config the import commands are tested with.
+    const IMPORT_ALIAS: &str = "marker-openssh-alias-3d7e";
+    const IMPORT_ADDRESS: &str = "marker-openssh-address-8b21.example.com";
+    const IMPORT_USER: &str = "marker-openssh-user-4c9a";
+
+    /// One importable block whose every value is a marker.
+    fn import_config() -> String {
+        format!(
+            "Host {IMPORT_ALIAS}\n  HostName {IMPORT_ADDRESS}\n  User {IMPORT_USER}\n  Port 2222\n"
+        )
+    }
+
+    /// A window wired like the app for the two import commands, over a vault of
+    /// its own, either left open or locked.
+    fn import_window(open: bool) -> (App<MockRuntime>, WebviewWindow<MockRuntime>, TempVault) {
+        let temp = TempVault::new();
+        let mut vault = temp.vault();
+        vault.create(VAULT_PASSWORD).expect("the vault was created");
+        if !open {
+            vault.lock();
+        }
+
+        let app = mock_builder()
+            .manage(VaultState::new(vault))
+            // Qualified on purpose: naming the handlers here means a rename
+            // breaks this test at compile time, not at run time.
+            .invoke_handler(tauri::generate_handler![
+                crate::openssh::preview_openssh_config,
+                crate::openssh::import_openssh_hosts
+            ])
+            .build(mock_context(noop_assets()))
+            .expect("the app built");
+        let webview = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("the window built");
+
+        (app, webview, temp)
+    }
+
+    /// The hosts in this window's vault, read straight from its state.
+    fn saved_hosts(app: &App<MockRuntime>) -> Vec<crate::inventory::Host> {
+        app.state::<VaultState>().handle().with(|vault| {
+            crate::inventory::list_host_records(vault).expect("the hosts were listed")
+        })
+    }
+
+    fn objects_in_vault(app: &App<MockRuntime>) -> Vec<String> {
+        app.state::<VaultState>().handle().with(|vault| {
+            vault
+                .list_objects(None)
+                .expect("the objects were listed")
+                .into_iter()
+                .map(|object| object.kind)
+                .collect()
+        })
+    }
+
+    /// The preview contract: the command name, the argument name, the body and
+    /// the camelCase field names of the answer. A preview writes nothing.
+    #[test]
+    fn the_preview_command_answers_over_ipc() {
+        let (app, webview, _temp) = import_window(true);
+
+        let previewed = invoke(
+            &webview,
+            "preview_openssh_config",
+            json!({ "request": { "content": import_config() } }),
+        )
+        .expect("the preview answered");
+
+        assert_eq!(
+            previewed,
+            json!({
+                "entries": [{
+                    "index": 0,
+                    "label": IMPORT_ALIAS,
+                    "address": IMPORT_ADDRESS,
+                    "port": 2222,
+                    "username": IMPORT_USER,
+                    "status": "ready",
+                    "warnings": [],
+                }],
+                "warnings": [],
+            }),
+            "the frontend contract changed"
+        );
+
+        // A preview is a read: no object of any kind appeared.
+        assert_eq!(objects_in_vault(&app), Vec::<String>::new());
+
+        // The argument name is part of the contract too.
+        assert!(
+            invoke(
+                &webview,
+                "preview_openssh_config",
+                json!({ "content": import_config() })
+            )
+            .is_err(),
+            "a renamed argument was accepted"
+        );
+
+        // Once a host is saved, the same config is reported as one that is
+        // already there, and never silently skipped or duplicated.
+        assert!(
+            invoke(
+                &webview,
+                "import_openssh_hosts",
+                json!({
+                    "request": {
+                        "content": import_config(),
+                        "selectedEntryIndexes": [0],
+                    }
+                }),
+            )
+            .is_ok(),
+            "the import failed"
+        );
+
+        let again = invoke(
+            &webview,
+            "preview_openssh_config",
+            json!({ "request": { "content": import_config() } }),
+        )
+        .expect("the preview answered");
+        assert_eq!(again["entries"][0]["status"], json!("already_exists"));
+        assert_eq!(
+            again["entries"][0]["warnings"][0]["line"],
+            Value::Null,
+            "a note that belongs to no line carries null"
+        );
+        assert!(
+            again["entries"][0]["warnings"][0]["message"]
+                .as_str()
+                .expect("a message")
+                .contains("already has this address")
+        );
+    }
+
+    /// The import contract: the command name, both argument names, and the
+    /// casing of the summary. The host it creates is an ordinary saved host.
+    #[test]
+    fn the_import_command_answers_over_ipc() {
+        let (app, webview, _temp) = import_window(true);
+
+        let summary = invoke(
+            &webview,
+            "import_openssh_hosts",
+            json!({
+                "request": {
+                    "content": import_config(),
+                    "selectedEntryIndexes": [0],
+                }
+            }),
+        )
+        .expect("the import answered");
+
+        assert_eq!(summary["imported"], 1);
+        assert_eq!(summary["skipped"], 0);
+        assert_eq!(summary["failed"], 0);
+
+        // The field names of a result are part of the contract, and a result
+        // that imported a host carries no reason.
+        let result = summary["results"][0].as_object().expect("an object");
+        let mut fields: Vec<&str> = result.keys().map(String::as_str).collect();
+        fields.sort_unstable();
+        assert_eq!(fields, vec!["hostId", "index", "label", "outcome"]);
+        assert_eq!(result["outcome"], json!("imported"));
+        assert_eq!(result["index"], 0);
+        assert_eq!(result["label"], IMPORT_ALIAS);
+
+        let hosts = saved_hosts(&app);
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(
+            Some(&hosts[0].id),
+            result["hostId"].as_str().map(|_| &hosts[0].id)
+        );
+        assert_eq!(hosts[0].label, IMPORT_ALIAS);
+        assert_eq!(hosts[0].address, IMPORT_ADDRESS);
+        assert_eq!(hosts[0].username, IMPORT_USER);
+        assert_eq!(hosts[0].port, 2222);
+        assert_eq!(hosts[0].group_id, None, "an import invented a group");
+        assert_eq!(
+            hosts[0].credential_id, None,
+            "an import invented a credential"
+        );
+        assert_eq!(objects_in_vault(&app), vec!["host".to_string()]);
+
+        // The same import again is harmless: it is skipped, and nothing is
+        // written a second time.
+        let again = invoke(
+            &webview,
+            "import_openssh_hosts",
+            json!({
+                "request": {
+                    "content": import_config(),
+                    "selectedEntryIndexes": [0],
+                }
+            }),
+        )
+        .expect("the import answered");
+        assert_eq!(again["imported"], 0);
+        assert_eq!(again["skipped"], 1);
+        assert_eq!(again["results"][0]["outcome"], json!("skipped"));
+        assert!(
+            again["results"][0]["reason"]
+                .as_str()
+                .expect("a reason")
+                .contains("already has this address")
+        );
+        assert_eq!(saved_hosts(&app).len(), 1);
+    }
+
+    /// The import takes the config text and the entries the user ticked, and
+    /// nothing else. A path, a host body or a credential id is refused instead
+    /// of ignored.
+    #[test]
+    fn the_import_request_carries_only_the_content_and_the_selected_indexes() {
+        let (app, webview, _temp) = import_window(true);
+
+        for (extra, why) in [
+            (json!({ "path": "/etc/ssh/ssh_config" }), "a path"),
+            (json!({ "hosts": [] }), "host bodies"),
+            (json!({ "credentialId": "credential" }), "a credential"),
+            (json!({ "groupId": "group" }), "a group"),
+            (json!({ "secret": "hunter2" }), "a secret"),
+        ] {
+            let mut request = json!({
+                "content": import_config(),
+                "selectedEntryIndexes": [0],
+            });
+            request
+                .as_object_mut()
+                .expect("the request is an object")
+                .extend(extra.as_object().expect("an object").clone());
+
+            let error = invoke(
+                &webview,
+                "import_openssh_hosts",
+                json!({ "request": request }),
+            )
+            .expect_err(why);
+            assert!(
+                !error.to_string().contains(IMPORT_ALIAS),
+                "{why} leaked a marker into {error}"
+            );
+        }
+
+        // The same for the preview, which takes one field only.
+        for extra in [
+            ("selectedEntryIndexes", json!([0])),
+            ("path", json!("/etc/ssh/ssh_config")),
+            ("credentials", json!([])),
+        ] {
+            let mut request = json!({ "content": import_config() });
+            request
+                .as_object_mut()
+                .expect("the request is an object")
+                .insert(extra.0.to_string(), extra.1);
+
+            assert!(
+                invoke(
+                    &webview,
+                    "preview_openssh_config",
+                    json!({ "request": request })
+                )
+                .is_err(),
+                "a preview with {} was accepted",
+                extra.0
+            );
+        }
+
+        // Nothing was written by any of those refused calls.
+        assert_eq!(objects_in_vault(&app), Vec::<String>::new());
+        assert!(
+            invoke(
+                &webview,
+                "import_openssh_hosts",
+                json!({ "request": { "content": import_config() } })
+            )
+            .is_err(),
+            "an import without a selection was accepted"
+        );
+    }
+
+    #[test]
+    fn the_import_commands_refuse_a_locked_vault() {
+        let (_app, webview, _temp) = import_window(false);
+
+        for (cmd, request) in [
+            (
+                "preview_openssh_config",
+                json!({ "content": import_config() }),
+            ),
+            (
+                "import_openssh_hosts",
+                json!({
+                    "content": import_config(),
+                    "selectedEntryIndexes": [0],
+                }),
+            ),
+        ] {
+            let error = invoke(&webview, cmd, json!({ "request": request })).expect_err(cmd);
+            assert_eq!(
+                error,
+                json!("The vault is locked. Unlock it first."),
+                "{cmd}"
+            );
+        }
+    }
+
+    /// Validation errors name the problem and never repeat the config.
+    #[test]
+    fn an_import_error_never_repeats_the_config() {
+        let (_app, webview, _temp) = import_window(true);
+
+        let oversized = format!(
+            "{}{}",
+            import_config(),
+            "x".repeat(crate::openssh::MAX_CONFIG_BYTES)
+        );
+        let calls = [
+            (
+                "preview_openssh_config",
+                json!({ "content": "" }),
+                "an empty config",
+            ),
+            (
+                "preview_openssh_config",
+                json!({ "content": oversized }),
+                "an oversized config",
+            ),
+            (
+                "import_openssh_hosts",
+                json!({ "content": "", "selectedEntryIndexes": [0] }),
+                "an empty config",
+            ),
+            (
+                "import_openssh_hosts",
+                json!({ "content": import_config(), "selectedEntryIndexes": [7] }),
+                "an unknown index",
+            ),
+            (
+                "import_openssh_hosts",
+                json!({ "content": import_config(), "selectedEntryIndexes": [0, 0] }),
+                "a repeated index",
+            ),
+            (
+                "import_openssh_hosts",
+                json!({ "content": import_config(), "selectedEntryIndexes": [] }),
+                "no selection",
+            ),
+        ];
+
+        for (cmd, request, why) in calls {
+            let error = invoke(&webview, cmd, json!({ "request": request })).expect_err(why);
+            let message = error.to_string();
+            for marker in [IMPORT_ALIAS, IMPORT_ADDRESS, IMPORT_USER] {
+                assert!(
+                    !message.contains(marker),
+                    "{why} repeated {marker} in {message}"
+                );
+            }
         }
     }
 

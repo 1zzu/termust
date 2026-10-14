@@ -1,8 +1,9 @@
 # Model data lokal v1
 
-Dokumen ini menjelaskan Group, Host, dan Credential pada Phase 1B1 serta Snippet pada Phase 1C:
-bentuk data, object kind, versi payload, relasi, dan aturan delete. Format penyimpanan dan crypto-nya
-tidak berubah dan tetap dijelaskan di [`vault-format-v1.md`](vault-format-v1.md).
+Dokumen ini menjelaskan Group, Host, dan Credential pada Phase 1B1, Snippet pada Phase 1C, serta Host
+hasil import OpenSSH config pada Phase 1D: bentuk data, object kind, versi payload, relasi, dan
+aturan delete. Format penyimpanan dan crypto-nya tidak berubah dan tetap dijelaskan di
+[`vault-format-v1.md`](vault-format-v1.md).
 
 ## Tempat penyimpanan
 
@@ -219,6 +220,25 @@ terpisah setelah isi, dan tidak ditambahkan bila isi sudah berakhir dengan baris
 seperti `echo one` dan `echo one\n` berperilaku sama: tepat satu submit. Jika tidak ada session yang
 aktif, command ditolak dan tidak ada yang dikirim.
 
+## Host hasil import OpenSSH (Phase 1D)
+
+Import OpenSSH config tidak menambahkan jenis record, tabel, atau payload version baru. Import
+hanya **membuat Host biasa** lewat service Host yang sama, dengan `kind` `host` dan payload v1 yang
+sama seperti Host yang dibuat dari form:
+
+- `label` = alias dari directive `Host`.
+- `address` = `HostName`, atau alias bila `HostName` tidak ada.
+- `port` = `Port`, atau 22 bila tidak ada.
+- `username` = `User`; block tanpa `User` tidak dapat diimpor.
+- `groupId` dan `credentialId` selalu `null`. Import tidak pernah membuat atau menautkan Credential
+  dan Group.
+
+Tidak ada penanda asal, tidak ada tabel import history, dan tidak ada potongan sintaks OpenSSH yang
+disimpan di payload Host. Karena itu Host hasil import dapat diedit, diberi Group, ditautkan ke
+Credential, dan dihubungkan lewat jalur saved Host yang sama seperti Host lainnya. Preview, status
+entry, dan aturan duplicate-nya dijelaskan di
+[`openssh-import-v1.md`](openssh-import-v1.md).
+
 ## Delete
 
 Semua delete memakai tombstone: row tetap ada dan `deleted_at` diisi. Object yang sudah dihapus
@@ -229,4 +249,6 @@ hilang dari daftar aktif dan tidak dapat dibaca lagi.
 Multi-sesi/multi-tab, reconnect otomatis, session restore, auto-run command, snippet variables,
 snippet tags, snippet folders, snippet history, snippet sharing/sync, SSH agent, certificate,
 keyboard-interactive, credential prompt fallback, tags, notes, search, import `known_hosts` OpenSSH,
-wildcard host, jump host, backup, auto-lock, dan sinkronisasi berada di luar fase ini.
+parser OpenSSH lengkap (`Match`, `Include`, wildcard, `Host *` default), import key dari config,
+menulis config OpenSSH, wildcard host, jump host, backup, auto-lock, dan sinkronisasi berada di luar
+fase ini.

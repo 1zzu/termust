@@ -39,8 +39,10 @@ use super::{
 };
 use crate::inventory::{
     CredentialSecret, HostInput, KnownKey, create_host_record, create_password_record,
-    create_private_key_record, remember_known_host,
+    create_private_key_record, remember_known_host, update_host_record,
 };
+use crate::openssh::model::EntryStatus;
+use crate::openssh::{import, preview};
 use crate::snippets::{SnippetInput, create_snippet_record, get_snippet, send_content};
 use crate::vault::{Vault, VaultHandle, VaultState, VaultStatus, test_support::TempVault};
 
@@ -978,6 +980,138 @@ async fn live_snippet_runs_on_the_remote_shell() {
     );
 
     let log = session.log();
+    let outcome = session.shutdown().await;
+    assert!(outcome.is_ok(), "the session failed: {outcome:?}");
+    assert_no_error_event(log);
+}
+
+/// The point of this phase, against a real server: a host that came from an
+/// OpenSSH config is an ordinary saved host. It arrives without a credential,
+/// connects only after one is linked, and then uses the same saved-host path as
+/// any other host — the same request resolution, the same host key prompt, the
+/// same shell.
+#[tokio::test]
+#[ignore = "needs a real SSH server; see the module comment"]
+async fn live_imported_host_connects_after_a_credential_is_linked() {
+    let Some(server) = LiveServer::from_env() else {
+        eprintln!("skipping: set TERMUST_LIVE_HOST and TERMUST_LIVE_USER to run the live tests");
+        return;
+    };
+    let Ok(password) = std::env::var("TERMUST_LIVE_PASSWORD") else {
+        eprintln!("skipping: TERMUST_LIVE_PASSWORD is not set");
+        return;
+    };
+
+    let temp = TempVault::new();
+    let mut vault = temp.vault();
+    vault.create(VAULT_PASSWORD).expect("the vault was created");
+
+    // A config a user could have written, pointing at the live server, with a
+    // key path that must be reported and never read.
+    let config = format!(
+        "# the live test's config\nHost live-import\n  HostName {}\n  User {}\n  Port {}\n  IdentityFile ~/.ssh/id_ed25519\n",
+        server.host, server.username, server.port
+    );
+
+    let previewed = preview(&vault, &config).expect("the config previewed");
+    assert_eq!(previewed.entries.len(), 1);
+    assert_eq!(previewed.entries[0].status, EntryStatus::Ready);
+    assert!(
+        previewed.entries[0]
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("IdentityFile")),
+        "the skipped key path was not reported: {:?}",
+        previewed.entries[0].warnings
+    );
+
+    let summary = import(&vault, &config, &[0]).expect("the import ran");
+    assert_eq!(
+        (summary.imported, summary.skipped, summary.failed),
+        (1, 0, 0)
+    );
+    let host_id = summary.results[0]
+        .host_id
+        .clone()
+        .expect("the imported host has an id");
+
+    // A freshly imported host has nothing to authenticate with yet, and the
+    // address, port and username came from the config.
+    let imported = crate::inventory::list_host_records(&vault).expect("the hosts were listed");
+    assert_eq!(imported.len(), 1, "the import created a second host");
+    let imported = &imported[0];
+    assert_eq!(imported.id, host_id);
+    assert_eq!(imported.label, "live-import");
+    assert_eq!(imported.address, server.host);
+    assert_eq!(imported.port, server.port);
+    assert_eq!(imported.username, server.username);
+    assert_eq!(imported.group_id, None);
+    assert_eq!(imported.credential_id, None);
+
+    // The same config again is recognised as one that is already saved.
+    let again = preview(&vault, &config).expect("the config previewed");
+    assert_eq!(again.entries[0].status, EntryStatus::AlreadyExists);
+
+    // The user's normal path: create a credential, then link it to the host.
+    let credential = create_password_record(&vault, "live password", &password)
+        .expect("the credential was created");
+    let linked = update_host_record(
+        &vault,
+        &host_id,
+        &HostInput {
+            label: imported.label.clone(),
+            address: imported.address.clone(),
+            port: i64::from(imported.port),
+            username: imported.username.clone(),
+            group_id: None,
+            credential_id: Some(credential.id.clone()),
+        },
+    )
+    .expect("the imported host was linked");
+    assert_eq!(linked.credential_id, Some(credential.id));
+
+    // From here on this is the saved-host path and nothing else: the request is
+    // built from the imported record and the credential beside it.
+    let handle = VaultState::new(vault).handle();
+    let request = resolve_saved(&handle, &host_id)
+        .await
+        .expect("the imported host resolves");
+    assert_eq!(request.host, server.host);
+    assert_eq!(request.port, server.port);
+    assert_eq!(request.username, server.username);
+    assert_eq!(request.auth, AuthMethod::Password);
+
+    // A shell, a marker the remote shell computes, and a clean disconnect.
+    let mut session = RunningSession::start_with_vault(request, handle.clone());
+    assert!(
+        session
+            .saw(|events| host_key_prompt(events).is_some())
+            .await,
+        "no host key prompt arrived: {:?}",
+        session.log()
+    );
+    session.answer_host_key(true);
+    if !session
+        .saw(|events| status_reached(events, "connected"))
+        .await
+    {
+        let outcome = session.shutdown().await;
+        panic!("an imported host never reached a shell: {outcome:?}");
+    }
+
+    session
+        .send(Command::Input(b"echo termust-import-$((4 + 4))\n".to_vec()))
+        .await;
+    assert!(
+        session
+            .saw(|events| terminal_text(events).contains("termust-import-8"))
+            .await,
+        "the imported host's shell never ran the marker: {:?}",
+        terminal_text(&session.log())
+    );
+
+    let log = session.log();
+    assert_secret_hidden(&log, &password);
     let outcome = session.shutdown().await;
     assert!(outcome.is_ok(), "the session failed: {outcome:?}");
     assert_no_error_event(log);

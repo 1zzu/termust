@@ -27,6 +27,7 @@
 	} from '#lib/components/ui/select';
 	import { Textarea } from '#lib/components/ui/textarea';
 	import { errorMessage } from '#lib/errors';
+	import ImportOpensshDialog from '#lib/components/import-openssh-dialog.svelte';
 	import {
 		NO_RELATION,
 		addedAt,
@@ -565,10 +566,17 @@
 
 			{#if section === 'hosts'}
 				<div class="grid gap-3">
-					<div class="flex items-center justify-between">
+					<div class="flex items-center justify-between gap-2">
 						<h3 class="text-sm font-medium">Hosts</h3>
-						<Button size="sm" onclick={openCreateHost} disabled={busy}>New host</Button>
+						<div class="flex shrink-0 gap-2">
+							<ImportOpensshDialog {vaultStatus} onimported={refresh} />
+							<Button size="sm" onclick={openCreateHost} disabled={busy}>New host</Button>
+						</div>
 					</div>
+					<p class="text-xs text-muted-foreground">
+						Saved hosts live encrypted in this vault. Importing from a basic OpenSSH config only
+						creates hosts: each one needs a Credential before its Connect button works.
+					</p>
 					{#if hosts.length === 0}
 						<p class="text-xs text-muted-foreground">No saved hosts yet.</p>
 					{:else}
