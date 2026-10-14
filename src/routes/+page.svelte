@@ -2,9 +2,11 @@
 	import { onMount } from 'svelte';
 	import { listen } from '@tauri-apps/api/event';
 
+	import AppShell from '#lib/components/app-shell/app-shell.svelte';
+	import AppTitlebar from '#lib/components/app-shell/app-titlebar.svelte';
+	import AppSidebar from '#lib/components/app-shell/app-sidebar.svelte';
 	import { Alert, AlertDescription, AlertTitle } from '#lib/components/ui/alert';
 	import InventoryPanel from '#lib/components/inventory-panel.svelte';
-	import SessionTabStrip from '#lib/components/session-tab-strip.svelte';
 	// The component is aliased: `TerminalSession` is the session descriptor type.
 	import TerminalSessionPane from '#lib/components/terminal-session.svelte';
 	import VaultPanel from '#lib/components/vault-panel.svelte';
@@ -33,7 +35,6 @@
 		SelectTrigger,
 		SelectValue
 	} from '#lib/components/ui/select';
-	import { Separator } from '#lib/components/ui/separator';
 	import { Textarea } from '#lib/components/ui/textarea';
 	import {
 		connectSsh,
@@ -41,8 +42,7 @@
 		errorMessage,
 		hostKeyPromise,
 		respondHostKey,
-		startSavedSsh,
-		statusLabel
+		startSavedSsh
 	} from '#lib/ssh';
 	import { createSessionLifecycle } from '#lib/session-lifecycle';
 	import {
@@ -51,7 +51,6 @@
 		findSession,
 		firstPromptSessionId,
 		hasLiveSessions,
-		isLiveStatus,
 		quickConnectTitle,
 		savedHostConnecting,
 		sessionCanDisconnect,
@@ -62,6 +61,13 @@
 	import type { Host } from '#lib/inventory';
 	import type { AuthMethod } from '#lib/types';
 	import type { VaultStatus } from '#lib/vault';
+
+	type Workspace = 'inventory' | 'terminal';
+
+	/** Active workspace: inventory (hosts, credentials, vault) or terminal (SSH sessions). */
+	let activeWorkspace = $state<Workspace>('inventory');
+	/** Whether the left sidebar navigation rail is collapsed. */
+	let sidebarCollapsed = $state(false);
 
 	// The vault state lives here so the saved inventory appears and disappears
 	// with it; the vault panel owns the password fields themselves.
@@ -110,7 +116,7 @@
 
 	/**
 	 * The window's session lifecycle: when the backend may be touched, and in
-	 * what order. The tabs stay this component's Svelte state — the lifecycle
+	 * what order. The tabs stay this component's Svelte state: the lifecycle
 	 * reads and writes that same list, so there is still one source of truth.
 	 */
 	const lifecycle = createSessionLifecycle({
@@ -188,6 +194,7 @@
 		});
 
 		openTab(session);
+		activeWorkspace = 'terminal';
 		lifecycle.begin(session.id, {
 			kind: 'quick',
 			request: {
@@ -224,6 +231,7 @@
 			savedHostId: savedHost.id
 		});
 		openTab(session);
+		activeWorkspace = 'terminal';
 		lifecycle.begin(session.id, { kind: 'saved', hostId: savedHost.id });
 	}
 
@@ -239,6 +247,7 @@
 		// Switching tabs only changes what is on screen: no session is touched,
 		// no error is cleared and no scrollback is thrown away.
 		activeSessionId = sessionId;
+		activeWorkspace = 'terminal';
 	}
 
 	/** Called by a tab once its terminal is usable. */
@@ -285,232 +294,259 @@
 	}
 </script>
 
-<div class="flex h-screen flex-col gap-4 p-4">
-	<header class="flex items-center justify-between">
-		<div>
-			<h1 class="text-lg font-semibold">Termust</h1>
-			<p class="text-xs text-muted-foreground">
-				Direct SSH from this device. Saved hosts and credentials are stored in the local vault.
-			</p>
-		</div>
-		<div class="flex items-center gap-2 text-sm">
-			{#if activeSession}
-				<span
-					class="size-2 rounded-full"
-					class:bg-emerald-500={activeSession.status === 'connected'}
-					class:bg-amber-500={isLiveStatus(activeSession.status) &&
-						activeSession.status !== 'connected'}
-					class:bg-rose-500={activeSession.status === 'error'}
-					class:bg-muted-foreground={!isLiveStatus(activeSession.status) &&
-						activeSession.status !== 'error'}
-					aria-hidden="true"
-				></span>
-				<span aria-live="polite">{statusLabel(activeSession.status)}</span>
-			{:else}
-				<span class="size-2 rounded-full bg-muted-foreground" aria-hidden="true"></span>
-				<span aria-live="polite">{statusLabel('idle')}</span>
-			{/if}
-		</div>
-	</header>
-
-	<!-- The panels scroll next to the terminal instead of squeezing it: the
-	     window keeps its height on every screen size. -->
-	<div class="grid min-h-0 flex-1 auto-rows-max content-start gap-4 overflow-y-auto">
-		<VaultPanel bind:status={vaultStatus} />
-
-		<InventoryPanel
-			{vaultStatus}
-			sessionStatus={activeSession?.status ?? 'idle'}
-			sessionId={activeSession?.id}
-			sessionTarget={activeSession?.title ?? ''}
-			hasLiveSessions={anyLiveSession}
-			hostConnecting={(hostId) => savedHostConnecting(sessions, hostId)}
-			onconnect={connectSavedHost}
+<AppShell>
+	{#snippet titlebar()}
+		<AppTitlebar
+			{activeWorkspace}
+			{sessions}
+			{activeSessionId}
+			{canDisconnect}
+			onnavigateinventory={() => (activeWorkspace = 'inventory')}
+			onselectsession={selectTab}
+			onclosesession={closeTab}
+			ondisconnect={() => void lifecycle.disconnect()}
 		/>
+	{/snippet}
 
-		<Card>
-			<CardHeader>
-				<CardTitle>Quick Connect</CardTitle>
-				<CardDescription>
-					Connects straight from this device with credentials you type here. Saved hosts have their
-					own Connect button and are not used here. Every Connect opens a tab of its own, so several
-					sessions can run at once.
-				</CardDescription>
-			</CardHeader>
-			<CardContent>
-				<form class="grid gap-3 sm:grid-cols-2" onsubmit={handleSubmit}>
-					<div class="grid gap-1.5">
-						<Label for="host">Hostname or IP</Label>
-						<Input
-							id="host"
-							bind:value={host}
-							placeholder="server.example.com"
-							disabled={quickSubmitting}
-						/>
-					</div>
-					<div class="grid gap-1.5">
-						<Label for="port">Port</Label>
-						<Input
-							id="port"
-							type="number"
-							min="1"
-							max="65535"
-							bind:value={port}
-							disabled={quickSubmitting}
-						/>
-					</div>
-					<div class="grid gap-1.5">
-						<Label for="username">Username</Label>
-						<Input
-							id="username"
-							bind:value={username}
-							placeholder="root"
-							disabled={quickSubmitting}
-						/>
-					</div>
-					<div class="grid gap-1.5">
-						<Label for="auth">Authentication</Label>
-						<Select type="single" bind:value={auth} items={authMethods} disabled={quickSubmitting}>
-							<SelectTrigger id="auth" class="w-full">
-								<SelectValue placeholder="Choose a method" />
-							</SelectTrigger>
-							<SelectContent>
-								<SelectItem value="password">Password</SelectItem>
-								<SelectItem value="privateKey">Private key</SelectItem>
-							</SelectContent>
-						</Select>
-					</div>
+	{#snippet sidebar()}
+		<AppSidebar
+			{activeWorkspace}
+			collapsed={sidebarCollapsed}
+			sessionCount={sessions.length}
+			{vaultStatus}
+			ontogglecollapse={() => (sidebarCollapsed = !sidebarCollapsed)}
+			onnavigate={(workspace) => (activeWorkspace = workspace)}
+		/>
+	{/snippet}
 
-					{#if auth === 'password'}
-						<div class="grid gap-1.5 sm:col-span-2">
-							<Label for="password">Password</Label>
-							<Input
-								id="password"
-								type="password"
-								bind:value={password}
-								disabled={quickSubmitting}
-							/>
-						</div>
-					{:else}
-						<div class="grid gap-1.5 sm:col-span-2">
-							<Label for="privateKey">Private key (OpenSSH format)</Label>
-							<Textarea
-								id="privateKey"
-								rows={6}
-								class="font-mono text-xs"
-								placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-								bind:value={privateKey}
-								disabled={quickSubmitting}
-							/>
-						</div>
-						<div class="grid gap-1.5 sm:col-span-2">
-							<Label for="passphrase">Passphrase (only if the key is encrypted)</Label>
-							<Input
-								id="passphrase"
-								type="password"
-								bind:value={passphrase}
-								disabled={quickSubmitting}
-							/>
-						</div>
-					{/if}
-
-					<div class="flex items-center gap-2 sm:col-span-2">
-						<Button type="submit" disabled={quickSubmitting}>
-							{quickSubmitting ? 'Connecting…' : 'Connect'}
-						</Button>
-						<Button
-							type="button"
-							variant="outline"
-							onclick={() => void lifecycle.disconnect()}
-							disabled={!canDisconnect}
-							title="Closes the connection but keeps the tab"
-						>
-							Disconnect
-						</Button>
-					</div>
-				</form>
-			</CardContent>
-		</Card>
-
-		{#if eventsError}
+	<!-- Global error notification if backend event subscriptions fail -->
+	{#if eventsError}
+		<div class="p-4 pb-0">
 			<Alert variant="destructive">
 				<AlertTitle>Session events unavailable</AlertTitle>
 				<AlertDescription>{eventsError}</AlertDescription>
 			</Alert>
-		{:else if activeSession?.errorMessage}
-			<Alert variant="destructive">
-				<AlertTitle>Connection failed</AlertTitle>
-				<AlertDescription>{activeSession.errorMessage}</AlertDescription>
-			</Alert>
-		{:else if activeSession?.statusMessage}
-			<Alert>
-				<AlertDescription>{activeSession.statusMessage}</AlertDescription>
-			</Alert>
-		{/if}
+		</div>
+	{/if}
+
+	<!-- Inventory Workspace (kept mounted in DOM) -->
+	<div class="h-full w-full overflow-y-auto p-4" class:hidden={activeWorkspace !== 'inventory'}>
+		<div class="mx-auto flex max-w-5xl flex-col gap-4">
+			<VaultPanel bind:status={vaultStatus} />
+
+			<InventoryPanel
+				{vaultStatus}
+				sessionStatus={activeSession?.status ?? 'idle'}
+				sessionId={activeSession?.id}
+				sessionTarget={activeSession?.title ?? ''}
+				hasLiveSessions={anyLiveSession}
+				hostConnecting={(hostId) => savedHostConnecting(sessions, hostId)}
+				onconnect={connectSavedHost}
+			/>
+
+			<Card>
+				<CardHeader>
+					<CardTitle>Quick Connect</CardTitle>
+					<CardDescription>
+						Connects straight from this device with credentials you type here. Saved hosts have
+						their own Connect button and are not used here. Every Connect opens a tab of its own, so
+						several sessions can run at once.
+					</CardDescription>
+				</CardHeader>
+				<CardContent>
+					<form class="grid gap-3 sm:grid-cols-2" onsubmit={handleSubmit}>
+						<div class="grid gap-1.5">
+							<Label for="host">Hostname or IP</Label>
+							<Input
+								id="host"
+								bind:value={host}
+								placeholder="server.example.com"
+								disabled={quickSubmitting}
+							/>
+						</div>
+						<div class="grid gap-1.5">
+							<Label for="port">Port</Label>
+							<Input
+								id="port"
+								type="number"
+								min="1"
+								max="65535"
+								bind:value={port}
+								disabled={quickSubmitting}
+							/>
+						</div>
+						<div class="grid gap-1.5">
+							<Label for="username">Username</Label>
+							<Input
+								id="username"
+								bind:value={username}
+								placeholder="root"
+								disabled={quickSubmitting}
+							/>
+						</div>
+						<div class="grid gap-1.5">
+							<Label for="auth">Authentication</Label>
+							<Select
+								type="single"
+								bind:value={auth}
+								items={authMethods}
+								disabled={quickSubmitting}
+							>
+								<SelectTrigger id="auth" class="w-full">
+									<SelectValue placeholder="Choose a method" />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value="password">Password</SelectItem>
+									<SelectItem value="privateKey">Private key</SelectItem>
+								</SelectContent>
+							</Select>
+						</div>
+
+						{#if auth === 'password'}
+							<div class="grid gap-1.5 sm:col-span-2">
+								<Label for="password">Password</Label>
+								<Input
+									id="password"
+									type="password"
+									bind:value={password}
+									disabled={quickSubmitting}
+								/>
+							</div>
+						{:else}
+							<div class="grid gap-1.5 sm:col-span-2">
+								<Label for="privateKey">Private key (OpenSSH format)</Label>
+								<Textarea
+									id="privateKey"
+									rows={6}
+									class="font-mono text-xs"
+									placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+									bind:value={privateKey}
+									disabled={quickSubmitting}
+								/>
+							</div>
+							<div class="grid gap-1.5 sm:col-span-2">
+								<Label for="passphrase">Passphrase (only if the key is encrypted)</Label>
+								<Input
+									id="passphrase"
+									type="password"
+									bind:value={passphrase}
+									disabled={quickSubmitting}
+								/>
+							</div>
+						{/if}
+
+						<div class="flex items-center gap-2 sm:col-span-2">
+							<Button type="submit" disabled={quickSubmitting}>
+								{quickSubmitting ? 'Connecting…' : 'Connect'}
+							</Button>
+							<Button
+								type="button"
+								variant="outline"
+								onclick={() => void lifecycle.disconnect()}
+								disabled={!canDisconnect}
+								title="Closes the connection but keeps the tab"
+							>
+								Disconnect
+							</Button>
+						</div>
+					</form>
+				</CardContent>
+			</Card>
+
+			{#if activeSession?.errorMessage}
+				<Alert variant="destructive">
+					<AlertTitle>Connection failed</AlertTitle>
+					<AlertDescription>{activeSession.errorMessage}</AlertDescription>
+				</Alert>
+			{:else if activeSession?.statusMessage}
+				<Alert>
+					<AlertDescription>{activeSession.statusMessage}</AlertDescription>
+				</Alert>
+			{/if}
+		</div>
 	</div>
 
-	<Separator />
-
-	<SessionTabStrip {sessions} {activeSessionId} onselect={selectTab} onclose={closeTab} />
-
-	<!-- Every tab stays mounted and only the active one is shown: that is what
-	     keeps a session's scrollback while the user is looking at another. -->
-	<div class="relative min-h-0 flex-1">
-		{#if sessions.length === 0}
-			<div class="flex h-full items-center justify-center rounded-lg border border-dashed">
-				<p class="text-xs text-muted-foreground">Connect to a host to open a terminal tab.</p>
+	<!-- Terminal Workspace (kept mounted in DOM) -->
+	<div
+		class="relative flex h-full w-full flex-col overflow-hidden p-2"
+		class:hidden={activeWorkspace !== 'terminal'}
+	>
+		{#if activeSession?.errorMessage}
+			<div class="mb-2 shrink-0">
+				<Alert variant="destructive">
+					<AlertTitle>Connection failed ({activeSession.title})</AlertTitle>
+					<AlertDescription>{activeSession.errorMessage}</AlertDescription>
+				</Alert>
 			</div>
 		{/if}
-		{#each sessions as session (session.id)}
-			<TerminalSessionPane
-				{session}
-				active={session.id === activeSessionId}
-				onready={handleReady}
-			/>
-		{/each}
-	</div>
 
-	<Dialog open={activePrompt !== null}>
-		<DialogContent
-			showCloseButton={false}
-			interactOutsideBehavior="ignore"
-			escapeKeydownBehavior="ignore"
-			class="sm:max-w-md"
-		>
-			<DialogHeader>
-				<DialogTitle>Verify the host key</DialogTitle>
-				<DialogDescription>
-					This is the first connection to {activeSession?.title ?? 'this host'}. Compare the
-					fingerprint with the server operator before continuing, or cancel to stop the connection.
-					{#if activePrompt}
-						{hostKeyPromise(activePrompt.persistent)}
-					{/if}
-				</DialogDescription>
-			</DialogHeader>
-
-			{#if activePrompt}
-				<dl class="grid gap-2 text-sm">
-					<div class="grid gap-0.5">
-						<dt class="text-xs text-muted-foreground">Host</dt>
-						<dd class="font-mono">
-							{activePrompt.host}:{activePrompt.port}
-						</dd>
+		<div class="relative min-h-0 flex-1">
+			{#if sessions.length === 0}
+				<div class="flex h-full items-center justify-center rounded-lg border border-dashed">
+					<div class="flex flex-col items-center gap-2 p-4 text-center">
+						<p class="text-xs text-muted-foreground">No active terminal sessions.</p>
+						<Button
+							variant="outline"
+							size="sm"
+							class="h-7 text-xs"
+							onclick={() => (activeWorkspace = 'inventory')}
+						>
+							Go to Hosts
+						</Button>
 					</div>
-					<div class="grid gap-0.5">
-						<dt class="text-xs text-muted-foreground">Algorithm</dt>
-						<dd class="font-mono">{activePrompt.algorithm}</dd>
-					</div>
-					<div class="grid gap-0.5">
-						<dt class="text-xs text-muted-foreground">SHA-256 fingerprint</dt>
-						<dd class="font-mono break-all">{activePrompt.fingerprint}</dd>
-					</div>
-				</dl>
+				</div>
 			{/if}
+			{#each sessions as session (session.id)}
+				<TerminalSessionPane
+					{session}
+					active={activeWorkspace === 'terminal' && session.id === activeSessionId}
+					onready={handleReady}
+				/>
+			{/each}
+		</div>
+	</div>
+</AppShell>
 
-			<DialogFooter>
-				<Button variant="outline" onclick={() => answerHostKey(false)}>Cancel</Button>
-				<Button onclick={() => answerHostKey(true)}>Accept and connect</Button>
-			</DialogFooter>
-		</DialogContent>
-	</Dialog>
-</div>
+<Dialog open={activePrompt !== null}>
+	<DialogContent
+		showCloseButton={false}
+		interactOutsideBehavior="ignore"
+		escapeKeydownBehavior="ignore"
+		class="sm:max-w-md"
+	>
+		<DialogHeader>
+			<DialogTitle>Verify the host key</DialogTitle>
+			<DialogDescription>
+				This is the first connection to {activeSession?.title ?? 'this host'}. Compare the
+				fingerprint with the server operator before continuing, or cancel to stop the connection.
+				{#if activePrompt}
+					{hostKeyPromise(activePrompt.persistent)}
+				{/if}
+			</DialogDescription>
+		</DialogHeader>
+
+		{#if activePrompt}
+			<dl class="grid gap-2 text-sm">
+				<div class="grid gap-0.5">
+					<dt class="text-xs text-muted-foreground">Host</dt>
+					<dd class="font-mono">
+						{activePrompt.host}:{activePrompt.port}
+					</dd>
+				</div>
+				<div class="grid gap-0.5">
+					<dt class="text-xs text-muted-foreground">Algorithm</dt>
+					<dd class="font-mono">{activePrompt.algorithm}</dd>
+				</div>
+				<div class="grid gap-0.5">
+					<dt class="text-xs text-muted-foreground">SHA-256 fingerprint</dt>
+					<dd class="font-mono break-all">{activePrompt.fingerprint}</dd>
+				</div>
+			</dl>
+		{/if}
+
+		<DialogFooter>
+			<Button variant="outline" onclick={() => answerHostKey(false)}>Cancel</Button>
+			<Button onclick={() => answerHostKey(true)}>Accept and connect</Button>
+		</DialogFooter>
+	</DialogContent>
+</Dialog>

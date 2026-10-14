@@ -2,6 +2,7 @@
 	import XIcon from '@lucide/svelte/icons/x';
 
 	import { Button } from '#lib/components/ui/button';
+	import { cn } from '#lib/utils';
 	import { statusLabel } from '#lib/ssh';
 	import {
 		panelElementId,
@@ -19,26 +20,28 @@
 	let {
 		sessions,
 		activeSessionId = null,
+		class: className,
 		onselect,
 		onclose
 	}: {
 		sessions: TerminalSession[];
 		activeSessionId?: string | null;
+		class?: string;
 		onselect: (sessionId: string) => void;
 		onclose: (sessionId: string) => void;
 	} = $props();
 
 	/** The colour that tells one session state from another at a glance. */
 	function statusDot(session: TerminalSession): string {
-		if (session.closing) return 'bg-muted-foreground';
+		if (session.closing) return 'bg-status-idle';
 		// Still connected, but on its way out: it counts as live until the backend
 		// has really stopped it, so it is not shown as settled yet.
-		if (session.disconnecting) return 'bg-amber-500';
-		if (session.status === 'connected') return 'bg-emerald-500';
-		if (session.status === 'error') return 'bg-rose-500';
-		if (session.status === 'disconnected') return 'bg-muted-foreground';
+		if (session.disconnecting) return 'bg-status-disconnecting';
+		if (session.status === 'connected') return 'bg-status-connected';
+		if (session.status === 'error') return 'bg-status-error';
+		if (session.status === 'disconnected') return 'bg-status-idle';
 		// Connecting, checking the host key, authenticating.
-		return 'bg-amber-500';
+		return 'bg-status-connecting';
 	}
 
 	/**
@@ -62,7 +65,7 @@
 <div
 	role="tablist"
 	aria-label="SSH sessions"
-	class="flex min-h-0 items-center gap-1 overflow-x-auto rounded-lg border p-1"
+	class={cn('flex min-h-0 items-center gap-1 overflow-x-auto rounded-lg border p-1', className)}
 >
 	{#if sessions.length === 0}
 		<p class="px-2 py-1 text-xs text-muted-foreground">No sessions yet. Connect to open a tab.</p>
