@@ -162,6 +162,22 @@ export function addedAt(seconds: number): string {
 	return new Date(seconds * 1000).toLocaleString();
 }
 
+// --- saved hosts ----------------------------------------------------------
+
+/**
+ * Whether a saved host can open a session: it needs a credential to
+ * authenticate with. The backend refuses the connection either way, so this only
+ * decides what the row offers.
+ */
+export function canConnectHost(host: Host): boolean {
+	return host.credentialId !== null;
+}
+
+/** What a host row says when there is nothing to authenticate with. */
+export function hostConnectionHint(host: Host): string {
+	return canConnectHost(host) ? '' : 'Credential required';
+}
+
 // --- host form ------------------------------------------------------------
 
 /** The backend's `HostInput`. A null id means "no relationship". */

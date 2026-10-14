@@ -19,6 +19,21 @@ export interface ConnectRequest {
 	passphrase?: string;
 }
 
+/**
+ * Arguments for the `start_saved_ssh` command: which saved host to connect, and
+ * the size of the terminal.
+ *
+ * There is deliberately no address, port, username, credential id or secret
+ * here. The backend reads all of that from the vault, so nothing the frontend
+ * sends can point the connection at another server or another credential.
+ */
+export interface SavedConnectRequest {
+	sessionId: string;
+	hostId: string;
+	cols: number;
+	rows: number;
+}
+
 /** `idle` only exists in the UI, before the first connection attempt. */
 export type ConnectionStatus =
 	| 'idle'

@@ -46,9 +46,13 @@
 		isConnected,
 		resizeSsh,
 		respondHostKey,
+		savedConnectRequest,
+		sessionLabel,
+		startSavedSsh,
 		statusLabel,
 		writeSsh
 	} from '#lib/ssh';
+	import type { Host } from '#lib/inventory';
 	import type {
 		AuthMethod,
 		ConnectionStatus,
@@ -76,6 +80,9 @@
 	let errorTitle = $state('Connection failed');
 	let errorText = $state('');
 	let hostKeyPrompt = $state<HostKeyEvent | null>(null);
+	// The label of the saved host the session belongs to, or null when the
+	// session came from the Quick Connect form.
+	let activeHostLabel = $state<string | null>(null);
 
 	let terminalContainer = $state<HTMLDivElement | null>(null);
 	let sessionId = $state<string | undefined>(undefined);
@@ -175,6 +182,11 @@
 		statusMessage = message;
 		if (next === 'disconnected' || next === 'error') {
 			clearCredentials();
+			// The backend drops a session as soon as its task ends, so the page must
+			// not keep pointing at one that is gone: that is also what lets the next
+			// Connect start again.
+			sessionId = undefined;
+			activeHostLabel = null;
 		}
 	}
 
@@ -204,6 +216,7 @@
 		const id = crypto.randomUUID();
 		sessionId = id;
 		status = 'connecting';
+		activeHostLabel = null;
 
 		try {
 			await connectSsh({
@@ -222,6 +235,37 @@
 			showError('Connection failed', error);
 			applyStatus('error', '');
 			sessionId = undefined;
+		}
+	}
+
+	/**
+	 * Opens the session a saved host describes.
+	 *
+	 * Only the host id and the terminal size leave the frontend: the address, the
+	 * username and the stored secret are resolved by the backend, so no credential
+	 * is ever copied into this component's state or into the Quick Connect form.
+	 */
+	async function connectSavedHost(host: Host) {
+		if (!terminal) return;
+		// One session at a time: the terminal, the status and the host-key prompt
+		// are all single-session pieces.
+		if (busy || connected || sessionId !== undefined) return;
+
+		errorTitle = 'Connection failed';
+		errorText = '';
+		statusMessage = '';
+		hostKeyPrompt = null;
+
+		const id = crypto.randomUUID();
+		sessionId = id;
+		status = 'connecting';
+		activeHostLabel = host.label;
+
+		try {
+			await startSavedSsh(savedConnectRequest(id, host.id, terminal.cols, terminal.rows));
+		} catch (error) {
+			showError('Connection failed', error);
+			applyStatus('error', '');
 		}
 	}
 
@@ -282,14 +326,18 @@
 	<div class="grid min-h-0 flex-1 auto-rows-max content-start gap-4 overflow-y-auto">
 		<VaultPanel bind:status={vaultStatus} />
 
-		<InventoryPanel status={vaultStatus} />
+		<InventoryPanel
+			status={vaultStatus}
+			sessionBusy={busy || connected}
+			onconnect={connectSavedHost}
+		/>
 
 		<Card>
 			<CardHeader>
 				<CardTitle>Quick Connect</CardTitle>
 				<CardDescription>
-					Connects straight from this device with credentials you type here. Saved hosts are not
-					used to connect yet.
+					Connects straight from this device with credentials you type here. Saved hosts have their
+					own Connect button and are not used here.
 				</CardDescription>
 			</CardHeader>
 			<CardContent>
@@ -367,6 +415,13 @@
 	</div>
 
 	<Separator />
+
+	<div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+		<span>{sessionLabel(activeHostLabel)}</span>
+		{#if sessionId}
+			<span class="font-mono">{sessionId.slice(0, 8)}</span>
+		{/if}
+	</div>
 
 	<div
 		bind:this={terminalContainer}

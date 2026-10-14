@@ -10,7 +10,7 @@
 
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::vault::{Vault, VaultObject, new_id, now};
+use crate::vault::{Vault, VaultError, VaultObject, new_id, now};
 
 use super::InventoryError;
 use super::model::{
@@ -328,6 +328,45 @@ pub fn delete_credential(vault: &Vault, id: &str) -> Result<(), InventoryError> 
     }
     vault.delete_object(id)?;
     Ok(())
+}
+
+/// Reads a saved host and the credential it points at, for the SSH layer.
+///
+/// This is the only way a saved host becomes something a connection can use, and
+/// it is where `start_saved_ssh` gets its address, username and secret from. The
+/// credential it answers with holds a secret, so it is handed straight to the
+/// SSH request and never to the frontend.
+///
+/// The host's own fields are checked again here: a record written by an older
+/// build, or one that lost a field, has to fail with a clear message instead of
+/// opening a connection to something it does not describe.
+pub fn credential_for_host(
+    vault: &Vault,
+    host_id: &str,
+) -> Result<(Host, Credential), InventoryError> {
+    let host = match get_host(vault, host_id) {
+        Ok(host) => host,
+        // An unknown id and a deleted host mean the same thing to a caller:
+        // there is nothing left to connect to.
+        Err(InventoryError::Vault(VaultError::NotFound)) => {
+            return Err(InventoryError::HostNotFound);
+        }
+        Err(error) => return Err(error),
+    };
+
+    if host.address.trim().is_empty() || host.username.trim().is_empty() || host.port == 0 {
+        return Err(InventoryError::IncompleteHost);
+    }
+
+    let Some(credential_id) = host.credential_id.as_deref() else {
+        return Err(InventoryError::HostHasNoCredential);
+    };
+
+    match load::<Credential>(vault, credential_id, KIND_CREDENTIAL) {
+        Ok(credential) => Ok((host, credential)),
+        Err(InventoryError::Vault(VaultError::NotFound)) => Err(InventoryError::CredentialNotFound),
+        Err(error) => Err(error),
+    }
 }
 
 fn build_credential(

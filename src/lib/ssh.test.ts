@@ -1,10 +1,20 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Only the IPC boundary is mocked: these tests pin the command name and the
+// payload the backend has to answer to.
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+
+import { invoke } from '@tauri-apps/api/core';
+
 import {
 	belongsToSession,
 	decodeOutput,
 	errorMessage,
 	hostKeyPromise,
 	isConnected,
+	savedConnectRequest,
+	sessionLabel,
+	startSavedSsh,
 	statusLabel
 } from './ssh';
 import type { ConnectionStatus } from './types';
@@ -85,6 +95,61 @@ describe('hostKeyPromise', () => {
 		expect(temporary).toContain('until the app closes');
 		expect(temporary).toContain('Unlock the vault');
 		expect(temporary).not.toContain('will not ask again');
+	});
+});
+
+describe('savedConnectRequest', () => {
+	it('sends the host id and the terminal size, and nothing else', () => {
+		const request = savedConnectRequest('session-1', 'host-1', 120, 40);
+
+		expect(request).toEqual({
+			sessionId: 'session-1',
+			hostId: 'host-1',
+			cols: 120,
+			rows: 40
+		});
+		expect(Object.keys(request).sort()).toEqual(['cols', 'hostId', 'rows', 'sessionId']);
+
+		// Nothing that describes a server or carries a secret belongs in here: the
+		// backend reads all of that from the vault.
+		const text = JSON.stringify(request).toLowerCase();
+		for (const forbidden of [
+			'password',
+			'privatekey',
+			'passphrase',
+			'address',
+			'username',
+			'port',
+			'credential',
+			'auth'
+		]) {
+			expect(text).not.toContain(forbidden);
+		}
+	});
+});
+
+describe('startSavedSsh', () => {
+	beforeEach(() => {
+		vi.mocked(invoke).mockReset();
+	});
+
+	it('names the command and the saved host', async () => {
+		vi.mocked(invoke).mockResolvedValue(null);
+
+		await startSavedSsh(savedConnectRequest('session-1', 'host-1', 120, 40));
+
+		expect(invoke).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(invoke).mock.calls[0][0]).toBe('start_saved_ssh');
+		expect(vi.mocked(invoke).mock.calls[0][1]).toEqual({
+			request: { sessionId: 'session-1', hostId: 'host-1', cols: 120, rows: 40 }
+		});
+	});
+});
+
+describe('sessionLabel', () => {
+	it('names the saved host, or the ad-hoc form that started the session', () => {
+		expect(sessionLabel('Prod web')).toBe('Saved host: Prod web');
+		expect(sessionLabel(null)).toBe('Quick Connect');
 	});
 });
 

@@ -159,6 +159,20 @@ melihat isi object:
 
 Tidak ada cascade delete: record yang masih dipakai harus dipindahkan atau dihapus lebih dulu.
 
+## Membaca Host dan Credential untuk koneksi (Phase 1B2b)
+
+Sesi SSH dari saved Host dibaca di satu tempat, `credential_for_host`, dan hanya dari sana:
+
+- Host dibaca berdasarkan id, lalu `address`, `port`, dan `username`-nya diperiksa ulang. Record
+  yang tidak lengkap — misalnya ditulis build lain — ditolak sebelum ada koneksi jaringan.
+- Host tanpa `credentialId`, Host yang sudah dihapus, dan Credential yang sudah dihapus masing-masing
+  punya pesan error sendiri. Vault yang terkunci menolak pada langkah pertama.
+- Payload `host` dan `credential` yang rusak ditolak sebagai corrupt, tanpa mengulang plaintext-nya.
+- Hasilnya langsung menjadi request internal sesi: `address`, `port`, dan `username` dari Host, secret
+  dari Credential. Secret tidak pernah menjadi bagian dari jawaban command dan tidak pernah dikirim
+  ke frontend; byte-nya di-zeroize saat sesi selesai. Tidak ada field baru pada payload `host`
+  atau `credential`, jadi format object tidak berubah.
+
 ## Delete
 
 Semua delete memakai tombstone: row tetap ada dan `deleted_at` diisi. Object yang sudah dihapus
@@ -166,6 +180,6 @@ hilang dari daftar aktif dan tidak dapat dibaca lagi.
 
 ## Yang belum ada
 
-Connecting dari saved Host, memakai saved Credential untuk koneksi, auto-run credential, SSH agent,
-certificate, tags, notes, search, import `known_hosts` OpenSSH, wildcard host, jump host, backup,
-auto-lock, dan sinkronisasi berada di luar fase ini.
+Multi-sesi/multi-tab, reconnect otomatis, session restore, auto-run command, SSH agent, certificate,
+keyboard-interactive, credential prompt fallback, tags, notes, search, import `known_hosts` OpenSSH,
+wildcard host, jump host, backup, auto-lock, dan sinkronisasi berada di luar fase ini.

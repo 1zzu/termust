@@ -27,13 +27,23 @@ use zeroize::Zeroizing;
 
 use crate::vault::{VaultError, blocking};
 
-use model::{CredentialSummary, Group, Host, HostInput, KnownHost};
+use model::{CredentialSummary, Group, KnownHost};
 
-/// The known-host pieces the SSH layer uses: an approved host key is an
-/// inventory record like any other, so the session reads and writes it here
-/// instead of touching SQLite or a key itself.
-pub(crate) use model::KnownKey;
-pub(crate) use service::{find_known_host, remember_known_host};
+/// The pieces the SSH layer needs from here: an approved host key is an
+/// inventory record like any other, and a saved host is read the same way a
+/// command reads it. A [`Credential`] holds a secret, so it stays crate-private
+/// and never reaches a command's answer.
+pub(crate) use model::{Credential, CredentialSecret, Host, HostInput, KnownKey};
+pub(crate) use service::{credential_for_host, find_known_host, remember_known_host};
+
+/// The service calls a test needs to set up a host and its credential the way
+/// the commands would. Test-only, and renamed, because the commands above
+/// already own these names.
+#[cfg(test)]
+pub(crate) use service::{
+    create_host as create_host_record, create_password_credential as create_password_record,
+    create_private_key_credential as create_private_key_record,
+};
 
 /// Everything an inventory operation can fail with.
 ///
@@ -50,6 +60,14 @@ pub enum InventoryError {
     GroupInUse,
     /// A host still points at this credential.
     CredentialInUse,
+    /// A saved host was asked for by an id that is unknown or deleted.
+    HostNotFound,
+    /// A saved host does not describe a usable target.
+    IncompleteHost,
+    /// A saved host has no credential linked to it.
+    HostHasNoCredential,
+    /// A saved host points at a credential that is unknown or deleted.
+    CredentialNotFound,
     /// An object was stored with a payload version this build does not know.
     UnsupportedPayloadVersion { found: u64, supported: u8 },
     /// An object was read as a kind it is not.
@@ -73,6 +91,16 @@ impl fmt::Display for InventoryError {
                 .write_str("That group is still used by a host. Move or delete those hosts first."),
             Self::CredentialInUse => formatter.write_str(
                 "That credential is still used by a host. Replace it on those hosts first.",
+            ),
+            Self::HostNotFound => formatter.write_str("That saved host no longer exists."),
+            Self::IncompleteHost => formatter.write_str(
+                "This saved host is missing its address, port or username. Edit it before connecting.",
+            ),
+            Self::HostHasNoCredential => formatter.write_str(
+                "This saved host has no credential yet. Edit the host and choose one.",
+            ),
+            Self::CredentialNotFound => formatter.write_str(
+                "The credential for this saved host no longer exists. Edit the host and choose another one.",
             ),
             Self::UnsupportedPayloadVersion { found, supported } => write!(
                 formatter,

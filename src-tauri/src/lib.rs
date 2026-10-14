@@ -9,18 +9,33 @@ mod ssh;
 // its API be used and tested directly, without going through the frontend.
 pub mod vault;
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, Runtime, State};
 
-use ssh::{ConnectRequest, SshState};
+use ssh::{ConnectRequest, SavedConnectRequest, SshState};
 use vault::{Vault, VaultState};
 
 #[tauri::command]
-fn connect_ssh(
-    app: AppHandle,
+fn connect_ssh<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, SshState>,
     request: ConnectRequest,
 ) -> Result<(), String> {
     ssh::start(&app, &state, request)
+}
+
+/// Opens a session for a saved host, using the credential stored beside it.
+///
+/// The frontend sends which host to use and how big the terminal is. The
+/// address, the port, the username and the secret all come from the vault, so
+/// nothing here can point the connection somewhere else, and no secret ever
+/// crosses the IPC boundary in either direction.
+#[tauri::command]
+async fn start_saved_ssh<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, SshState>,
+    request: SavedConnectRequest,
+) -> Result<(), String> {
+    ssh::start_saved(&app, &state, request).await
 }
 
 #[tauri::command]
@@ -69,6 +84,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             connect_ssh,
+            start_saved_ssh,
             write_ssh,
             resize_ssh,
             respond_host_key,
@@ -117,8 +133,12 @@ mod tests {
     };
     use tauri::{App, Manager, WebviewWindow, WebviewWindowBuilder};
 
-    use super::{disconnect_ssh, resize_ssh, respond_host_key, write_ssh};
-    use crate::inventory::{KnownKey, remember_known_host};
+    use super::{
+        connect_ssh, disconnect_ssh, resize_ssh, respond_host_key, start_saved_ssh, write_ssh,
+    };
+    use crate::inventory::{
+        HostInput, KnownKey, create_host_record, create_password_record, remember_known_host,
+    };
     use crate::ssh::SshState;
     use crate::vault::{VaultState, test_support::TempVault};
 
@@ -335,5 +355,195 @@ mod tests {
         let error = invoke(&webview, "list_known_hosts", json!({})).expect_err("a locked vault");
 
         assert_eq!(error, json!("The vault is locked. Unlock it first."));
+    }
+
+    /// A secret that must never appear in any answer or payload. It is stored in
+    /// the credential the saved host points at.
+    const SAVED_PASSWORD: &str = "marker-password-8f2a";
+
+    /// A window wired like the app for the saved-host command, over a vault of
+    /// its own holding one saved host.
+    ///
+    /// `credential` decides whether that host points at a credential, so a test
+    /// can ask for the "this host cannot connect yet" answer.
+    fn saved_host_window(
+        open: bool,
+        credential: bool,
+    ) -> (
+        App<MockRuntime>,
+        WebviewWindow<MockRuntime>,
+        TempVault,
+        String,
+    ) {
+        let temp = TempVault::new();
+        let mut vault = temp.vault();
+        vault.create(VAULT_PASSWORD).expect("the vault was created");
+
+        // The records are written the way the commands write them, before the
+        // vault is handed to the app, so a locked window is locked for real.
+        let credential_id = credential.then(|| {
+            create_password_record(&vault, "Prod", SAVED_PASSWORD)
+                .expect("the credential was created")
+                .id
+        });
+        let host = create_host_record(
+            &vault,
+            &HostInput {
+                label: "Prod web".to_string(),
+                address: "web.example.com".to_string(),
+                port: 2222,
+                username: "deploy".to_string(),
+                group_id: None,
+                credential_id,
+            },
+        )
+        .expect("the host was created");
+
+        if !open {
+            vault.lock();
+        }
+
+        let app = mock_builder()
+            .manage(SshState::default())
+            .manage(VaultState::new(vault))
+            .invoke_handler(tauri::generate_handler![
+                connect_ssh,
+                start_saved_ssh,
+                write_ssh,
+                disconnect_ssh
+            ])
+            .build(mock_context(noop_assets()))
+            .expect("the app built");
+        let webview = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("the window built");
+
+        (app, webview, temp, host.id)
+    }
+
+    fn saved_request(host_id: &str) -> Value {
+        json!({ "request": { "sessionId": "saved-1", "hostId": host_id, "cols": 100, "rows": 30 } })
+    }
+
+    /// Connecting a saved host carries an id and a terminal size, and nothing
+    /// else: a payload that tries to bring a secret, an address or a credential
+    /// is refused rather than quietly ignored.
+    #[test]
+    fn the_saved_host_payload_carries_no_secret_over_ipc() {
+        let (_app, webview, _temp, host_id) = saved_host_window(true, true);
+
+        for (extra, why) in [
+            (json!({ "password": "hunter2" }), "a password"),
+            (json!({ "privateKey": "key-material" }), "a private key"),
+            (json!({ "passphrase": "unlock" }), "a passphrase"),
+            (json!({ "address": "evil.example.com" }), "an address"),
+            (json!({ "port": 22 }), "a port"),
+            (json!({ "username": "root" }), "a username"),
+            (json!({ "credentialId": "other" }), "a credential id"),
+            (json!({ "auth": "password" }), "an auth method"),
+        ] {
+            let mut request = json!({
+                "sessionId": "saved-1",
+                "hostId": host_id,
+                "cols": 100,
+                "rows": 30
+            });
+            request
+                .as_object_mut()
+                .expect("the request is an object")
+                .extend(
+                    extra
+                        .as_object()
+                        .expect("the extra field is an object")
+                        .clone(),
+                );
+
+            let error =
+                invoke(&webview, "start_saved_ssh", json!({ "request": request })).expect_err(why);
+            assert!(
+                !error.to_string().contains(SAVED_PASSWORD),
+                "{why} leaked into {error}"
+            );
+        }
+
+        // The argument name is part of the contract too.
+        assert!(
+            invoke(
+                &webview,
+                "start_saved_ssh",
+                json!({ "savedHost": { "sessionId": "saved-1" } })
+            )
+            .is_err(),
+            "a renamed argument was accepted"
+        );
+        assert!(
+            invoke(
+                &webview,
+                "start_saved_ssh",
+                json!({ "request": { "sessionId": "saved-1", "cols": 100, "rows": 30 } })
+            )
+            .is_err(),
+            "a request without a host id was accepted"
+        );
+    }
+
+    #[test]
+    fn the_saved_host_command_refuses_a_locked_vault() {
+        let (_app, webview, _temp, host_id) = saved_host_window(false, true);
+
+        let error = invoke(&webview, "start_saved_ssh", saved_request(&host_id))
+            .expect_err("a locked vault cannot open a saved host");
+
+        assert_eq!(error, json!("The vault is locked. Unlock it first."));
+    }
+
+    #[test]
+    fn the_saved_host_command_refuses_an_unknown_or_deleted_host() {
+        let (_app, webview, _temp, _host_id) = saved_host_window(true, true);
+
+        let error = invoke(&webview, "start_saved_ssh", saved_request("no-such-host"))
+            .expect_err("an unknown host cannot be connected");
+
+        assert_eq!(error, json!("That saved host no longer exists."));
+        assert!(!error.to_string().contains(SAVED_PASSWORD));
+    }
+
+    #[test]
+    fn the_saved_host_command_refuses_a_host_without_a_credential() {
+        let (_app, webview, _temp, host_id) = saved_host_window(true, false);
+
+        let error = invoke(&webview, "start_saved_ssh", saved_request(&host_id))
+            .expect_err("a host without a credential cannot be connected");
+
+        assert_eq!(
+            error,
+            json!("This saved host has no credential yet. Edit the host and choose one.")
+        );
+    }
+
+    /// Quick Connect still answers over the same dispatch, and still reports its
+    /// own validation before any socket is opened.
+    #[test]
+    fn quick_connect_still_reports_an_incomplete_request() {
+        let (_app, webview, _temp, _host_id) = saved_host_window(true, true);
+
+        let error = invoke(
+            &webview,
+            "connect_ssh",
+            json!({
+                "request": {
+                    "sessionId": "quick-1",
+                    "host": "example.com",
+                    "port": 22,
+                    "username": "root",
+                    "auth": "password",
+                    "cols": 100,
+                    "rows": 30
+                }
+            }),
+        )
+        .expect_err("a password connection needs a password");
+
+        assert_eq!(error, json!("Enter the password for this host."));
     }
 }

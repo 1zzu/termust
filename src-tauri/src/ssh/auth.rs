@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use russh::client;
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, decode_secret_key};
+use zeroize::Zeroizing;
 
 use super::host_key::HostKeyProbe;
 use super::session::describe_connection_error;
@@ -26,14 +27,16 @@ pub(super) async fn authenticate(
 ) -> Result<(), String> {
     let authenticated = match request.auth {
         AuthMethod::Password => {
-            let password = request.password.as_deref().unwrap_or_default();
+            // Borrowed, never copied: the request keeps the only copy, and it is
+            // zeroized when the session ends.
+            let password = text(&request.password);
             handle
                 .authenticate_password(&request.username, password)
                 .await
         }
         AuthMethod::PrivateKey => {
-            let pem = request.private_key.as_deref().unwrap_or_default();
-            let key = decode_secret_key(pem, request.passphrase.as_deref())
+            let pem = text(&request.private_key);
+            let key = decode_secret_key(pem, request.passphrase.as_deref().map(String::as_str))
                 .map_err(|_| describe_key_error(request.passphrase.is_some()))?;
             // Only RSA keys are signed with a chosen hash; `russh` ignores it for
             // every other key type.
@@ -56,6 +59,11 @@ pub(super) async fn authenticate(
         Ok(_) => Err("Authentication failed. Check the username and credentials.".to_string()),
         Err(error) => Err(describe_connection_error(&error)),
     }
+}
+
+/// The secret of a request as a string, borrowed for the call that needs it.
+fn text(secret: &Option<Zeroizing<String>>) -> &str {
+    secret.as_deref().map(String::as_str).unwrap_or_default()
 }
 
 /// Picks the hash an RSA key is signed with, refusing the legacy SHA-1 fallback.

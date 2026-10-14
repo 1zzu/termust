@@ -9,16 +9,19 @@ import { invoke } from '@tauri-apps/api/core';
 import {
 	NO_RELATION,
 	addedAt,
+	canConnectHost,
 	credentialFormProblem,
 	emptyCredentialForm,
 	emptyHostForm,
 	emptyInventory,
 	forgetKnownHost,
+	hostConnectionHint,
 	hostFormProblem,
 	hostInput,
 	inventoryVisible,
 	listKnownHosts,
 	type CredentialSummary,
+	type Host,
 	type HostFormValues,
 	type KnownHost
 } from './inventory';
@@ -28,6 +31,21 @@ const PASSPHRASE_MARKER = 'marker-passphrase-9c4';
 
 function hostForm(overrides: Partial<HostFormValues> = {}): HostFormValues {
 	return { ...emptyHostForm(), ...overrides };
+}
+
+function host(overrides: Partial<Host> = {}): Host {
+	return {
+		id: 'host-1',
+		label: 'Prod web',
+		address: 'web.example.com',
+		port: 2222,
+		username: 'deploy',
+		groupId: null,
+		credentialId: null,
+		createdAt: 1,
+		updatedAt: 1,
+		...overrides
+	};
 }
 
 describe('inventoryVisible', () => {
@@ -101,6 +119,18 @@ describe('addedAt', () => {
 
 		expect(addedAt(seconds)).toBe(new Date(seconds * 1000).toLocaleString());
 		expect(addedAt(seconds)).not.toBe(new Date(seconds).toLocaleString());
+	});
+});
+
+describe('canConnectHost', () => {
+	it('needs a credential before a saved host can open a session', () => {
+		expect(canConnectHost(host({ credentialId: 'credential-1' }))).toBe(true);
+		expect(canConnectHost(host({ credentialId: null }))).toBe(false);
+	});
+
+	it('says what the host is missing', () => {
+		expect(hostConnectionHint(host({ credentialId: 'credential-1' }))).toBe('');
+		expect(hostConnectionHint(host({ credentialId: null }))).toBe('Credential required');
 	});
 });
 

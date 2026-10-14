@@ -27,16 +27,24 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
+use zeroize::Zeroizing;
 
 use super::host_key::host_key_id;
 use super::known_hosts::HostKeyTrust;
+use super::saved::{self, SavedConnectRequest};
 use super::session::{Command, run_session};
 use super::{
     AuthMethod, COMMAND_QUEUE, ConnectRequest, EVENT_DATA, EVENT_ERROR, EVENT_HOST_KEY,
     EVENT_STATUS, Notifier, TEST_TASK_TIMEOUT,
 };
-use crate::inventory::KnownKey;
-use crate::vault::{VaultHandle, VaultState, VaultStatus, test_support::TempVault};
+use crate::inventory::{
+    CredentialSecret, HostInput, KnownKey, create_host_record, create_password_record,
+    create_private_key_record, remember_known_host,
+};
+use crate::vault::{Vault, VaultHandle, VaultState, VaultStatus, test_support::TempVault};
+
+/// The master password every live test creates its vault with.
+const VAULT_PASSWORD: &str = "a-strong-master-password";
 
 /// One event as the webview would receive it.
 type Event = (String, Value);
@@ -498,6 +506,366 @@ async fn live_rsa_only_server_is_refused() {
     );
 }
 
+// --- a saved host, end to end ----------------------------------------------
+
+/// A vault of its own, open, holding one saved host that points at the given
+/// credential: what the app has once the user created both.
+fn saved_host_vault(
+    credential: CredentialSecret,
+    server: &LiveServer,
+) -> (TempVault, Vault, String) {
+    let temp = TempVault::new();
+    let mut vault = temp.vault();
+    vault.create(VAULT_PASSWORD).expect("the vault was created");
+
+    let credential_id = match credential {
+        CredentialSecret::Password { password } => {
+            create_password_record(&vault, "live password", password.as_str())
+                .expect("the credential was created")
+                .id
+        }
+        CredentialSecret::PrivateKey {
+            private_key,
+            passphrase,
+        } => {
+            create_private_key_record(
+                &vault,
+                "live key",
+                private_key.as_str(),
+                passphrase.as_ref().map(|value| value.as_str()),
+            )
+            .expect("the credential was created")
+            .id
+        }
+    };
+
+    let host = create_host_record(
+        &vault,
+        &HostInput {
+            label: "Live server".to_string(),
+            address: server.host.clone(),
+            port: i64::from(server.port),
+            username: server.username.clone(),
+            group_id: None,
+            credential_id: Some(credential_id),
+        },
+    )
+    .expect("the saved host was created");
+
+    (temp, vault, host.id)
+}
+
+fn password_secret(password: &str) -> CredentialSecret {
+    CredentialSecret::Password {
+        password: Zeroizing::new(password.to_string()),
+    }
+}
+
+fn key_secret(private_key: &str, passphrase: Option<&str>) -> CredentialSecret {
+    CredentialSecret::PrivateKey {
+        private_key: Zeroizing::new(private_key.to_string()),
+        passphrase: passphrase.map(|value| Zeroizing::new(value.to_string())),
+    }
+}
+
+/// Resolves a saved host the way `start_saved_ssh` does, before any session is
+/// spawned.
+async fn resolve_saved(handle: &VaultHandle, host_id: &str) -> Result<ConnectRequest, String> {
+    saved::request_from_vault(
+        handle.clone(),
+        &SavedConnectRequest {
+            session_id: "live-saved".to_string(),
+            host_id: host_id.to_string(),
+            cols: 100,
+            rows: 30,
+        },
+    )
+    .await
+}
+
+/// No event the frontend receives may carry the secret that opened the session.
+fn assert_secret_hidden(events: &[Event], secret: &str) {
+    let text = serde_json::to_string(events).expect("the events serialize");
+    assert!(
+        !text.contains(secret),
+        "a secret reached the event stream: {text}"
+    );
+}
+
+/// Opens a shell through a saved host, runs a marker command and disconnects.
+/// Returns the events, as `run_live_session` does for Quick Connect.
+async fn run_saved_session(handle: &VaultHandle, host_id: &str) -> Vec<Event> {
+    let request = resolve_saved(handle, host_id)
+        .await
+        .expect("the saved host resolves to a request");
+    let mut session = RunningSession::start_with_vault(request, handle.clone());
+
+    assert!(
+        session
+            .saw(|events| host_key_prompt(events).is_some())
+            .await,
+        "no host key prompt arrived: {:?}",
+        session.log()
+    );
+    session.answer_host_key(true);
+
+    if !session
+        .saw(|events| status_reached(events, "connected"))
+        .await
+    {
+        let outcome = session.shutdown().await;
+        panic!("the saved host never reached a shell: {outcome:?}");
+    }
+
+    session
+        .send(Command::Input(b"echo termust-saved-check\n".to_vec()))
+        .await;
+    assert!(
+        session
+            .saw(|events| terminal_text(events).contains("termust-saved-check"))
+            .await,
+        "the shell never echoed the marker: {:?}",
+        session.log()
+    );
+
+    let outcome = session.shutdown().await;
+    assert!(outcome.is_ok(), "the session failed: {outcome:?}");
+
+    session.log()
+}
+
+#[tokio::test]
+#[ignore = "needs a real SSH server; see the module comment"]
+async fn live_saved_host_password_credential_opens_a_shell() {
+    let Some(server) = LiveServer::from_env() else {
+        eprintln!("skipping: set TERMUST_LIVE_HOST and TERMUST_LIVE_USER to run the live tests");
+        return;
+    };
+    let Ok(password) = std::env::var("TERMUST_LIVE_PASSWORD") else {
+        eprintln!("skipping: TERMUST_LIVE_PASSWORD is not set");
+        return;
+    };
+
+    let (_temp, vault, host_id) = saved_host_vault(password_secret(&password), &server);
+    let handle = VaultState::new(vault).handle();
+
+    // The request really is built from the host record and its credential.
+    let request = resolve_saved(&handle, &host_id)
+        .await
+        .expect("the saved host resolves");
+    assert_eq!(request.auth, AuthMethod::Password);
+    assert_eq!(request.host, server.host);
+    assert_eq!(request.port, server.port);
+    assert_eq!(request.username, server.username);
+
+    let log = run_saved_session(&handle, &host_id).await;
+    assert_no_error_event(log.clone());
+    assert_secret_hidden(&log, &password);
+}
+
+#[tokio::test]
+#[ignore = "needs a real SSH server; see the module comment"]
+async fn live_saved_host_private_key_credential_opens_a_shell() {
+    let Some(server) = LiveServer::from_env() else {
+        eprintln!("skipping: set TERMUST_LIVE_HOST and TERMUST_LIVE_USER to run the live tests");
+        return;
+    };
+    let Some(private_key) = private_key_from_env() else {
+        eprintln!("skipping: set TERMUST_LIVE_PRIVATE_KEY_PATH or TERMUST_LIVE_PRIVATE_KEY");
+        return;
+    };
+    let passphrase = std::env::var("TERMUST_LIVE_PASSPHRASE").ok();
+
+    let (_temp, vault, host_id) =
+        saved_host_vault(key_secret(&private_key, passphrase.as_deref()), &server);
+    let handle = VaultState::new(vault).handle();
+
+    let request = resolve_saved(&handle, &host_id)
+        .await
+        .expect("the saved host resolves");
+    assert_eq!(request.auth, AuthMethod::PrivateKey);
+
+    let log = run_saved_session(&handle, &host_id).await;
+    assert_no_error_event(log.clone());
+    assert_secret_hidden(&log, &private_key);
+}
+
+/// The whole point of the phase, against a real server: approve the key once
+/// through a saved host, then connect the same saved host again after the vault
+/// was closed and opened, without being asked again.
+#[tokio::test]
+#[ignore = "needs a real SSH server; see the module comment"]
+async fn live_saved_host_keeps_its_host_key_across_a_restart() {
+    let Some(server) = LiveServer::from_env() else {
+        eprintln!("skipping: set TERMUST_LIVE_HOST and TERMUST_LIVE_USER to run the live tests");
+        return;
+    };
+    let Ok(password) = std::env::var("TERMUST_LIVE_PASSWORD") else {
+        eprintln!("skipping: TERMUST_LIVE_PASSWORD is not set");
+        return;
+    };
+
+    let (temp, vault, host_id) = saved_host_vault(password_secret(&password), &server);
+    let handle = VaultState::new(vault).handle();
+    run_saved_session(&handle, &host_id).await;
+
+    // A restart: the app holds nothing in memory, and only the vault can answer.
+    let mut reopened = temp.vault();
+    assert_eq!(reopened.status().unwrap(), VaultStatus::Locked);
+    reopened.unlock(VAULT_PASSWORD).expect("the vault unlocked");
+    let handle = VaultState::new(reopened).handle();
+
+    let request = resolve_saved(&handle, &host_id)
+        .await
+        .expect("the saved host resolves after a restart");
+    let mut session = RunningSession::start_with_vault(request, handle);
+
+    assert!(
+        session
+            .saw(|events| status_reached(events, "connected"))
+            .await,
+        "the remembered key did not open a shell: {:?}",
+        session.log()
+    );
+    let log = session.log();
+    assert!(
+        !log.iter().any(|(event, _)| event == EVENT_HOST_KEY),
+        "a remembered key must be used without asking: {log:?}"
+    );
+    let outcome = session.shutdown().await;
+    assert!(outcome.is_ok(), "the second session failed: {outcome:?}");
+    assert_secret_hidden(&log, &password);
+}
+
+#[tokio::test]
+#[ignore = "needs a real SSH server; see the module comment"]
+async fn live_saved_host_with_a_wrong_password_reports_it_without_repeating_it() {
+    let Some(server) = LiveServer::from_env() else {
+        eprintln!("skipping: set TERMUST_LIVE_HOST and TERMUST_LIVE_USER to run the live tests");
+        return;
+    };
+    let Ok(password) = std::env::var("TERMUST_LIVE_PASSWORD") else {
+        eprintln!("skipping: TERMUST_LIVE_PASSWORD is not set");
+        return;
+    };
+
+    let wrong = format!("{password}-wrong");
+    let (_temp, vault, host_id) = saved_host_vault(password_secret(&wrong), &server);
+    let handle = VaultState::new(vault).handle();
+
+    let request = resolve_saved(&handle, &host_id)
+        .await
+        .expect("the saved host resolves");
+    let mut session = RunningSession::start_with_vault(request, handle);
+    assert!(
+        session
+            .saw(|events| host_key_prompt(events).is_some())
+            .await,
+        "no host key prompt arrived: {:?}",
+        session.log()
+    );
+    session.answer_host_key(true);
+
+    let outcome = session.shutdown().await;
+    let message = outcome.expect_err("a wrong password must fail the login");
+    assert!(message.contains("Authentication failed"), "{message}");
+    assert!(
+        !message.contains(&wrong),
+        "the password was repeated: {message}"
+    );
+
+    let log = session.log();
+    assert!(
+        !status_reached(&log, "connected"),
+        "a failed login must never reach a shell: {log:?}"
+    );
+    assert_secret_hidden(&log, &wrong);
+}
+
+#[tokio::test]
+#[ignore = "needs a real SSH server; see the module comment"]
+async fn live_saved_host_with_a_changed_host_key_is_blocked() {
+    let Some(server) = LiveServer::from_env() else {
+        eprintln!("skipping: set TERMUST_LIVE_HOST and TERMUST_LIVE_USER to run the live tests");
+        return;
+    };
+    let Ok(password) = std::env::var("TERMUST_LIVE_PASSWORD") else {
+        eprintln!("skipping: TERMUST_LIVE_PASSWORD is not set");
+        return;
+    };
+
+    let (_temp, vault, host_id) = saved_host_vault(password_secret(&password), &server);
+    let handle = VaultState::new(vault).handle();
+
+    // Pretend an earlier connection approved a different key for this server.
+    handle
+        .with(|vault| {
+            remember_known_host(
+                vault,
+                &host_key_id(&server.host, server.port),
+                &KnownKey {
+                    algorithm: "ssh-ed25519".to_string(),
+                    fingerprint: "SHA256:notTheKeyThisServerUses".to_string(),
+                },
+            )
+        })
+        .expect("the recorded key was stored");
+
+    let request = resolve_saved(&handle, &host_id)
+        .await
+        .expect("the saved host resolves");
+    let mut session = RunningSession::start_with_vault(request, handle);
+
+    let outcome = session.shutdown().await;
+    let message = outcome.expect_err("a changed host key must fail the connection");
+    assert!(message.contains("changed"), "{message}");
+
+    let log = session.log();
+    assert!(
+        !log.iter().any(|(event, _)| event == EVENT_HOST_KEY),
+        "a changed host key must not be offered for approval: {log:?}"
+    );
+    assert!(
+        !status_reached(&log, "connected"),
+        "a changed host key must never reach a shell: {log:?}"
+    );
+}
+
+/// This one needs no server: a saved host without a credential has to fail
+/// while its record is read, before anything is looked up or connected. The
+/// address is deliberately one that cannot resolve, so a failure that came from
+/// the network instead would look different.
+#[tokio::test]
+async fn live_saved_host_without_a_credential_fails_before_any_connection() {
+    let temp = TempVault::new();
+    let mut vault = temp.vault();
+    vault.create(VAULT_PASSWORD).expect("the vault was created");
+
+    let host = create_host_record(
+        &vault,
+        &HostInput {
+            label: "No credential".to_string(),
+            address: "no-such-host.invalid".to_string(),
+            port: 22,
+            username: "nobody".to_string(),
+            group_id: None,
+            credential_id: None,
+        },
+    )
+    .expect("the saved host was created");
+
+    let handle = VaultState::new(vault).handle();
+    let error = match resolve_saved(&handle, &host.id).await {
+        Ok(_) => panic!("a host without a credential cannot be used"),
+        Err(error) => error,
+    };
+
+    assert_eq!(
+        error,
+        "This saved host has no credential yet. Edit the host and choose one."
+    );
+}
+
 /// A session that ended on its own must not have reported a failure.
 fn assert_no_error_event(log: Vec<Event>) {
     assert!(
@@ -515,7 +883,7 @@ fn password_request(server: &LiveServer, password: String) -> ConnectRequest {
         auth: AuthMethod::Password,
         cols: 100,
         rows: 30,
-        password: Some(password),
+        password: Some(Zeroizing::new(password)),
         private_key: None,
         passphrase: None,
     }
@@ -535,8 +903,8 @@ fn private_key_request(
         cols: 100,
         rows: 30,
         password: None,
-        private_key: Some(private_key),
-        passphrase,
+        private_key: Some(Zeroizing::new(private_key)),
+        passphrase: passphrase.map(Zeroizing::new),
     }
 }
 

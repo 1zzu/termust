@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { ConnectRequest, ConnectionStatus } from './types';
+import type { ConnectRequest, ConnectionStatus, SavedConnectRequest } from './types';
 
 /** Event names emitted by `src-tauri/src/ssh.rs`. Keep both sides in step. */
 export const SSH_EVENT = {
@@ -19,6 +19,35 @@ export function writeSsh(sessionId: string, data: string): Promise<void> {
 
 export function resizeSsh(sessionId: string, cols: number, rows: number): Promise<void> {
 	return invoke('resize_ssh', { sessionId, cols, rows });
+}
+
+/**
+ * Connects a saved host. The backend looks its address, username and credential
+ * up in the vault; this command only names the host.
+ */
+export function startSavedSsh(request: SavedConnectRequest): Promise<void> {
+	return invoke('start_saved_ssh', { request });
+}
+
+/**
+ * The payload `start_saved_ssh` takes, built in one place so that these four
+ * fields, and only these four, are what leaves the frontend.
+ */
+export function savedConnectRequest(
+	sessionId: string,
+	hostId: string,
+	cols: number,
+	rows: number
+): SavedConnectRequest {
+	return { sessionId, hostId, cols, rows };
+}
+
+/**
+ * What the strip above the terminal says about the session on screen: a saved
+ * host by name, or the ad-hoc form that started it.
+ */
+export function sessionLabel(savedHostLabel: string | null): string {
+	return savedHostLabel === null ? 'Quick Connect' : `Saved host: ${savedHostLabel}`;
 }
 
 export function respondHostKey(sessionId: string, accepted: boolean): Promise<void> {

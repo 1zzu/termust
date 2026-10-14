@@ -78,9 +78,13 @@ packaging, bukan kegagalan kode.
 - **Persistent known hosts (Phase 1B2a).** Host key yang disetujui disimpan sebagai object
   terenkripsi di vault, dapat dilihat dan dilupakan dari UI, dan dipakai ulang tanpa prompt.
   Lihat bagian _Known hosts_.
+- **Connect dari Saved Host (Phase 1B2b).** Tombol `Connect` pada setiap saved Host membuka sesi
+  SSH memakai Credential yang tertaut, tanpa mengetik ulang password atau private key. Frontend
+  hanya mengirim id Host; address, username, dan secret dibaca backend dari vault. Lihat bagian
+  _Saved Host connect_.
 - **Quick Connect.** Form koneksi langsung tanpa menyimpan host: host atau IP, port (default 22),
-  username, pilihan autentikasi, dan kredensial sesuai pilihan. Form ini belum memakai saved Host
-  maupun saved Credential.
+  username, pilihan autentikasi, dan kredensial sesuai pilihan. Form ini tetap terpisah dan tidak
+  memakai saved Host maupun saved Credential.
 - Autentikasi password dan private key (termasuk key terenkripsi lewat passphrase).
 - Verifikasi host key: fingerprint SHA-256 ditampilkan sebelum persetujuan pertama, dan
   host key tidak pernah diterima otomatis. Persetujuan disimpan di vault, jadi koneksi
@@ -137,7 +141,30 @@ perubahan pada crypto Phase 1A.
 
 Model data lengkapnya ada di [`docs/local-data-model-v1.md`](docs/local-data-model-v1.md).
 
-Saved Host belum dapat dipakai untuk membuka sesi SSH: tombol connect pada saved Host belum ada.
+## Saved Host connect (Phase 1B2b)
+
+Setiap saved Host yang punya Credential menampilkan tombol `Connect`. Host tanpa Credential
+menampilkan `Credential required` dan tombolnya tidak aktif; Credential dipilih lewat `Edit` pada
+Host, bukan lewat dialog saat connect.
+
+- Frontend hanya mengirim `sessionId`, `hostId`, `cols`, dan `rows`. Address, port, username, jenis
+  autentikasi, dan secret seluruhnya diselesaikan backend dari vault — payload itu menolak field
+  lain (`deny_unknown_fields`), jadi frontend tidak dapat mengarahkan koneksi ke server atau
+  Credential lain, dan tidak ada secret yang melewati IPC.
+- Secret credential tidak pernah dikembalikan ke frontend, tidak masuk event, tidak masuk error,
+  dan tidak masuk form Quick Connect. Yang dikirim hanya request internal yang dibaca
+  authentication, dan byte secret-nya di-zeroize saat sesi selesai.
+- Vault harus unlocked untuk memulai sesi dari saved Host. Kalau vault terkunci, command ditolak
+  dengan pesan yang jelas dan tidak ada koneksi jaringan yang dibuka. Quick Connect tetap dapat
+  dipakai tanpa vault.
+- Mengunci vault setelah sesi berjalan **tidak** memutus sesi itu: koneksi sudah selesai
+  terautentikasi dan tidak menyimpan apa pun untuk reconnect. Sesi baru dari saved Host tetap
+  memerlukan unlock ulang, dan tidak ada reconnect otomatis.
+- Sesi memakai lifecycle yang sama dengan Quick Connect, termasuk verifikasi host key Phase 1B2a
+  (approval pertama, trust lintas restart, dan blokir saat key berubah).
+- Satu sesi dalam satu waktu: selama sesi berjalan atau sedang dibuka, tombol `Connect` lain dan
+  form Quick Connect tidak aktif. Label saved host yang sedang dipakai tampil di atas terminal,
+  bersama status koneksi.
 
 ## Known hosts (Phase 1B2a)
 
@@ -153,7 +180,7 @@ Phase 1A.
   dulu.
 - Saat vault terkunci, record tidak dapat dibaca, jadi tiap host dianggap belum dikenal dan
   approval hanya berlaku selama aplikasi berjalan. Dialognya menjelaskan hal itu, dan tidak ada
-  vault yang dibuka otomatis.
+  vault yang dibuka otomatis. Ini juga yang membuat Quick Connect tetap bekerja tanpa vault.
 - Known host dapat dilihat dan dilupakan dari UI; melupakan berarti koneksi berikutnya akan
   bertanya lagi. Menyimpan hanya terjadi melalui prompt SSH: tidak ada command yang menulis
   fingerprint dari frontend.
@@ -163,12 +190,12 @@ Aturan identitas dan payload-nya ada di [`docs/local-data-model-v1.md`](docs/loc
 
 ## Yang sengaja belum dibuat
 
-Connect dari saved Host, memakai saved Credential untuk koneksi, auto-run credential, SSH agent,
-certificate, tags, notes, search, import `known_hosts` OpenSSH, wildcard host, backup/export/import,
-auto-lock timer, sinkronisasi, enkripsi E2EE lintas perangkat, akun, backend Axum, SFTP, port
-forwarding, jump host, snippets, web client, Android/iOS, tim dan RBAC, plugin, serta auto-update.
-Group, Host, dan Credential sudah tersimpan di vault (Phase 1B1) dan host key sudah disimpan
-persisten (Phase 1B2a), tetapi belum ada yang memakai saved Host untuk membuka sesi SSH.
+Multi-tab atau multi-sesi terminal, split pane, reconnect otomatis, session restore, auto-run
+command, SSH agent, certificate, keyboard-interactive, credential prompt fallback, import OpenSSH
+config, import `known_hosts` OpenSSH, wildcard host, jump host, SFTP, port forwarding, snippets,
+tags, notes, search, backup/export/import, auto-lock timer, keychain/biometric unlock, sinkronisasi,
+enkripsi E2EE lintas perangkat, akun, backend Axum/self-hosted, web SSH relay, mobile UI, tim dan
+RBAC, plugin, serta auto-update. Satu sesi per window adalah batas fase ini.
 
 ## Pengujian
 
@@ -191,20 +218,25 @@ cargo test
 ```
 
 `cargo test` menjalankan test vault (lifecycle, crypto, storage, dan corruption), test inventory
-(Group, Host, Credential, known host, relasi, dan handling secret), test trust host key, serta test
-SSH. Semuanya memakai temporary directory dan parameter Argon2id yang ringan, jadi tidak pernah
-menyentuh database atau app data pengguna.
+(Group, Host, Credential, known host, relasi, resolusi Host + Credential untuk koneksi, dan handling
+secret), test trust host key, serta test SSH. Semuanya memakai temporary directory dan parameter
+Argon2id yang ringan, jadi tidak pernah menyentuh database atau app data pengguna.
 
-Test yang menyentuh Tauri command (`list_known_hosts`, `forget_known_host`) memakai mock runtime
-milik Tauri, sehingga nama command, nama argument, dan bentuk payload yang diterima frontend
-diuji lewat dispatch IPC yang sebenarnya — bukan lewat salinannya.
+Test yang menyentuh Tauri command (`connect_ssh`, `start_saved_ssh`, `list_known_hosts`,
+`forget_known_host`) memakai mock runtime milik Tauri, sehingga nama command, nama argument, dan
+bentuk payload yang diterima frontend diuji lewat dispatch IPC yang sebenarnya — bukan lewat
+salinannya. Termasuk bahwa `start_saved_ssh` menolak payload yang mencoba membawa password, private
+key, passphrase, address, atau credential id.
 
 ### Live test terhadap server SSH sungguhan
 
 Test di `src-tauri/src/ssh/live.rs` benar-benar membuka koneksi SSH: password, private key,
 penolakan host key, host key yang berubah, host key yang diingat setelah vault dibuka ulang, dan
-server yang hanya menawarkan `ssh-rsa` (SHA-1) yang harus ditolak. Semuanya diabaikan secara
-default dan hanya berjalan bila diminta:
+server yang hanya menawarkan `ssh-rsa` (SHA-1) yang harus ditolak. Untuk Phase 1B2b, test yang sama
+membuka sesi lewat jalur saved Host (Credential password dan private key dari vault), mengulanginya
+tanpa prompt host key setelah vault dibuka ulang, serta membuktikan password salah dan host key yang
+berubah gagal tanpa mengulang secret di pesan error. Semuanya diabaikan secara default dan hanya
+berjalan bila diminta:
 
 ```sh
 cd src-tauri

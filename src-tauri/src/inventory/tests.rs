@@ -10,12 +10,12 @@ use std::path::Path;
 use rusqlite::{Connection, params};
 
 use crate::vault::test_support::TempVault;
-use crate::vault::{Vault, VaultError, VaultStatus};
+use crate::vault::{Vault, VaultError, VaultStatus, new_id};
 
 use super::InventoryError;
 use super::model::{
-    Credential, CredentialKind, CredentialSecret, HostInput, KIND_CREDENTIAL, KIND_GROUP, KnownKey,
-    PAYLOAD_VERSION,
+    Credential, CredentialKind, CredentialSecret, HostInput, KIND_CREDENTIAL, KIND_GROUP,
+    KIND_HOST, KnownKey, PAYLOAD_VERSION,
 };
 use super::service;
 
@@ -766,6 +766,141 @@ fn a_known_host_cannot_be_read_as_another_kind() {
             expected: "known_host"
         }
     ));
+}
+
+// --- connecting a saved host ----------------------------------------------
+
+#[test]
+fn a_saved_host_resolves_to_the_credential_it_points_at() {
+    let (_temp, vault) = unlocked_vault();
+    let credential = service::create_password_credential(&vault, "Prod", PASSWORD_MARKER).unwrap();
+    let host =
+        service::create_host(&vault, &host_input("web", None, Some(&credential.id))).unwrap();
+
+    let (resolved_host, resolved) = service::credential_for_host(&vault, &host.id).unwrap();
+
+    // Everything the connection needs comes from the host record...
+    assert_eq!(resolved_host.id, host.id);
+    assert_eq!(resolved_host.address, "web.example.com");
+    assert_eq!(resolved_host.port, 22);
+    assert_eq!(resolved_host.username, "root");
+    // ...and the secret from the credential it points at.
+    match resolved.secret {
+        CredentialSecret::Password { password } => assert_eq!(password.as_str(), PASSWORD_MARKER),
+        other => panic!("unexpected secret: {other:?}"),
+    }
+}
+
+#[test]
+fn a_saved_host_without_a_credential_is_refused() {
+    let (_temp, vault) = unlocked_vault();
+    let host = service::create_host(&vault, &host_input("web", None, None)).unwrap();
+
+    assert!(matches!(
+        service::credential_for_host(&vault, &host.id),
+        Err(InventoryError::HostHasNoCredential)
+    ));
+}
+
+#[test]
+fn a_saved_host_whose_credential_is_gone_is_refused() {
+    let (_temp, vault) = unlocked_vault();
+    let credential = service::create_password_credential(&vault, "Prod", PASSWORD_MARKER).unwrap();
+    let host =
+        service::create_host(&vault, &host_input("web", None, Some(&credential.id))).unwrap();
+
+    // The service refuses to delete a credential a host still uses, so the row
+    // is tombstoned the way a later cleanup would leave it.
+    vault.delete_object(&credential.id).unwrap();
+
+    let error = service::credential_for_host(&vault, &host.id).unwrap_err();
+    assert!(
+        matches!(error, InventoryError::CredentialNotFound),
+        "unexpected error: {error:?}"
+    );
+    assert!(!error.to_string().contains(PASSWORD_MARKER));
+}
+
+#[test]
+fn a_deleted_saved_host_is_refused() {
+    let (_temp, vault) = unlocked_vault();
+    let credential = service::create_password_credential(&vault, "Prod", PASSWORD_MARKER).unwrap();
+    let host =
+        service::create_host(&vault, &host_input("web", None, Some(&credential.id))).unwrap();
+
+    service::delete_host(&vault, &host.id).unwrap();
+
+    let error = service::credential_for_host(&vault, &host.id).unwrap_err();
+    assert!(
+        matches!(error, InventoryError::HostNotFound),
+        "unexpected error: {error:?}"
+    );
+    assert!(!error.to_string().contains(PASSWORD_MARKER));
+}
+
+#[test]
+fn connecting_a_saved_host_needs_an_unlocked_vault() {
+    let (_temp, mut vault) = unlocked_vault();
+    let credential = service::create_password_credential(&vault, "Prod", PASSWORD_MARKER).unwrap();
+    let host =
+        service::create_host(&vault, &host_input("web", None, Some(&credential.id))).unwrap();
+
+    vault.lock();
+
+    assert!(matches!(
+        service::credential_for_host(&vault, &host.id),
+        Err(InventoryError::Vault(VaultError::Locked))
+    ));
+}
+
+#[test]
+fn a_corrupted_credential_payload_is_refused_without_its_plaintext() {
+    let (temp, vault) = unlocked_vault();
+    let credential = service::create_password_credential(&vault, "Prod", PASSWORD_MARKER).unwrap();
+    let host =
+        service::create_host(&vault, &host_input("web", None, Some(&credential.id))).unwrap();
+
+    flip_payload_byte(&temp.database(), &credential.id);
+
+    let error = service::credential_for_host(&vault, &host.id).unwrap_err();
+    assert!(
+        matches!(error, InventoryError::Vault(VaultError::Corrupt(_))),
+        "unexpected error: {error:?}"
+    );
+    let message = error.to_string();
+    assert!(!message.contains(PASSWORD_MARKER));
+    assert!(!message.contains(KEY_MATERIAL));
+}
+
+#[test]
+fn a_saved_host_that_lost_its_fields_is_refused() {
+    let (_temp, vault) = unlocked_vault();
+    let credential = service::create_password_credential(&vault, "Prod", PASSWORD_MARKER).unwrap();
+
+    // Written straight through the vault, the way a record from another build
+    // could look: no address, no port and no username.
+    let id = new_id().unwrap();
+    let payload = serde_json::json!({
+        "version": PAYLOAD_VERSION,
+        "id": id,
+        "label": "broken",
+        "address": "   ",
+        "port": 0,
+        "username": "",
+        "groupId": null,
+        "credentialId": credential.id,
+        "createdAt": 1,
+        "updatedAt": 1,
+    })
+    .to_string();
+    vault.put_object_with_id(&id, KIND_HOST, &payload).unwrap();
+
+    let error = service::credential_for_host(&vault, &id).unwrap_err();
+    assert!(
+        matches!(error, InventoryError::IncompleteHost),
+        "unexpected error: {error:?}"
+    );
+    assert!(!error.to_string().contains(PASSWORD_MARKER));
 }
 
 // --- encryption and storage -----------------------------------------------

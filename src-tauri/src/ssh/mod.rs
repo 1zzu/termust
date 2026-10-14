@@ -12,6 +12,7 @@
 //! - `host_key.rs`: whether a server's host key may be used.
 //! - `known_hosts.rs`: where an approved key is remembered, in memory and in the
 //!   encrypted vault.
+//! - `saved.rs`: turning a saved host and its stored credential into a request.
 //! - `auth.rs`: password and private-key authentication.
 //!
 //! Nothing in this module writes credentials to disk or to a log. The connect
@@ -21,6 +22,7 @@
 mod auth;
 mod host_key;
 mod known_hosts;
+mod saved;
 mod session;
 
 #[cfg(test)]
@@ -36,11 +38,15 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
 use tauri::async_runtime::JoinHandle;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::{mpsc, oneshot};
+use zeroize::Zeroizing;
 
 use crate::vault;
 use session::{Command, run_session};
+
+// What the saved-host command takes, so `lib.rs` can name it.
+pub use saved::SavedConnectRequest;
 
 /// Event names shared with the frontend. Keep in sync with `src/lib/ssh.ts`.
 pub const EVENT_DATA: &str = "ssh://data";
@@ -103,7 +109,13 @@ struct Session {
     task: Option<JoinHandle<()>>,
 }
 
-/// Connection settings sent by the frontend. Secrets live here and nowhere else.
+/// Connection settings a session runs on, whatever started it.
+///
+/// Quick Connect builds one from what the user typed; `saved.rs` builds the same
+/// type from a stored host and credential. Secrets live here and nowhere else,
+/// wrapped so their bytes are wiped when the request is dropped at the end of
+/// the session. There is still no `Debug` implementation, so neither the
+/// password nor the private key can be printed by accident.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectRequest {
@@ -114,9 +126,9 @@ pub struct ConnectRequest {
     pub auth: AuthMethod,
     pub cols: u32,
     pub rows: u32,
-    pub password: Option<String>,
-    pub private_key: Option<String>,
-    pub passphrase: Option<String>,
+    pub password: Option<Zeroizing<String>>,
+    pub private_key: Option<Zeroizing<String>>,
+    pub passphrase: Option<Zeroizing<String>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Debug)]
@@ -150,6 +162,7 @@ impl ConnectRequest {
                 if self
                     .private_key
                     .as_deref()
+                    .map(String::as_str)
                     .map(str::trim)
                     .unwrap_or("")
                     .is_empty() =>
@@ -212,7 +225,11 @@ struct ErrorEvent {
 /// Starts a session and returns as soon as the task is spawned. Progress and
 /// failures arrive as events, because connecting can block on the user's answer
 /// to the host-key prompt.
-pub fn start(app: &AppHandle, state: &SshState, request: ConnectRequest) -> Result<(), String> {
+pub fn start<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &SshState,
+    request: ConnectRequest,
+) -> Result<(), String> {
     request.validate()?;
 
     // Reconnecting with the same id replaces whatever was running before.
@@ -290,6 +307,32 @@ pub fn start(app: &AppHandle, state: &SshState, request: ConnectRequest) -> Resu
 
     state.attach_task(&session_id, task);
     Ok(())
+}
+
+/// Starts the session a saved host describes.
+///
+/// The frontend only names the host; the address, the username and the secret
+/// all come from the vault, so nothing it sends can point the connection at
+/// another server or another credential. Reading the vault happens on the
+/// blocking pool and finishes before the session is spawned, which is what keeps
+/// the vault lock away from every network operation.
+pub async fn start_saved<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &SshState,
+    request: SavedConnectRequest,
+) -> Result<(), String> {
+    request.validate()?;
+
+    let Some(vault) = app
+        .try_state::<vault::VaultState>()
+        .map(|vault| vault.handle())
+    else {
+        return Err("The vault is not available.".to_string());
+    };
+    let resolved = saved::request_from_vault(vault, &request).await?;
+
+    // Same lifecycle as Quick Connect: one session, one task, one set of events.
+    start(app, state, resolved)
 }
 
 /// Sends terminal input to a session.
@@ -402,14 +445,16 @@ mod tests {
     #[test]
     fn valid_password_request_is_accepted() {
         let mut request = request(AuthMethod::Password);
-        request.password = Some("hunter2".to_string());
+        request.password = Some(Zeroizing::new("hunter2".to_string()));
         assert!(request.validate().is_ok());
     }
 
     #[test]
     fn valid_private_key_request_is_accepted() {
         let mut request = request(AuthMethod::PrivateKey);
-        request.private_key = Some("-----BEGIN OPENSSH PRIVATE KEY-----".to_string());
+        request.private_key = Some(Zeroizing::new(
+            "-----BEGIN OPENSSH PRIVATE KEY-----".to_string(),
+        ));
         assert!(request.validate().is_ok());
     }
 
@@ -422,7 +467,7 @@ mod tests {
     #[test]
     fn blank_private_key_is_reported() {
         let mut request = request(AuthMethod::PrivateKey);
-        request.private_key = Some("   \n".to_string());
+        request.private_key = Some(Zeroizing::new("   \n".to_string()));
         assert_eq!(
             request.validate().unwrap_err(),
             "Paste the private key for this host."
@@ -432,7 +477,7 @@ mod tests {
     #[test]
     fn blank_host_and_username_are_reported() {
         let mut blank_host = request(AuthMethod::Password);
-        blank_host.password = Some("hunter2".to_string());
+        blank_host.password = Some(Zeroizing::new("hunter2".to_string()));
         blank_host.host = "  ".to_string();
         assert_eq!(
             blank_host.validate().unwrap_err(),
@@ -440,7 +485,7 @@ mod tests {
         );
 
         let mut blank_user = request(AuthMethod::Password);
-        blank_user.password = Some("hunter2".to_string());
+        blank_user.password = Some(Zeroizing::new("hunter2".to_string()));
         blank_user.username = String::new();
         assert_eq!(blank_user.validate().unwrap_err(), "Enter a username.");
     }
@@ -448,7 +493,7 @@ mod tests {
     #[test]
     fn port_zero_is_reported() {
         let mut request = request(AuthMethod::Password);
-        request.password = Some("hunter2".to_string());
+        request.password = Some(Zeroizing::new("hunter2".to_string()));
         request.port = 0;
         assert_eq!(
             request.validate().unwrap_err(),
@@ -460,8 +505,8 @@ mod tests {
     fn validation_messages_never_echo_credentials() {
         for auth in [AuthMethod::Password, AuthMethod::PrivateKey] {
             let mut request = request(auth);
-            request.password = Some("correct-horse-battery-staple".to_string());
-            request.private_key = Some("super-secret-key-material".to_string());
+            request.password = Some(Zeroizing::new("correct-horse-battery-staple".to_string()));
+            request.private_key = Some(Zeroizing::new("super-secret-key-material".to_string()));
             // Force a failure that is not about the credential itself.
             request.host = "   ".to_string();
 
@@ -503,6 +548,9 @@ mod tests {
         assert_eq!(request.session_id, "abc");
         assert_eq!(request.port, 2222);
         assert_eq!(request.auth, AuthMethod::PrivateKey);
-        assert_eq!(request.passphrase.as_deref(), Some("unlock"));
+        assert_eq!(
+            request.passphrase.as_deref().map(String::as_str),
+            Some("unlock")
+        );
     }
 }

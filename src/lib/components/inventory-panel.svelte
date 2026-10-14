@@ -33,6 +33,7 @@
 		createGroup,
 		createHost,
 		createPasswordCredential,
+		canConnectHost,
 		createPrivateKeyCredential,
 		credentialFormProblem,
 		deleteCredential,
@@ -42,6 +43,7 @@
 		emptyHostForm,
 		emptyInventory,
 		forgetKnownHost,
+		hostConnectionHint,
 		hostFormProblem,
 		hostInput,
 		inventoryVisible,
@@ -64,10 +66,18 @@
 	} from '#lib/inventory';
 	import type { VaultStatus } from '#lib/vault';
 
-	// The page owns the vault status, so this panel is told when the vault opens
-	// or closes. While it is closed the panel keeps nothing decrypted: the lists
-	// are emptied instead of merely hidden.
-	let { status }: { status: VaultStatus | undefined } = $props();
+	// The page owns the vault status and the session, so this panel is told when
+	// the vault opens or closes, and when a session is already running: a second
+	// one would have to share the terminal the first one is using.
+	let {
+		status,
+		sessionBusy = false,
+		onconnect
+	}: {
+		status: VaultStatus | undefined;
+		sessionBusy?: boolean;
+		onconnect?: (host: Host) => void;
+	} = $props();
 
 	let section = $state<'hosts' | 'credentials' | 'groups' | 'known_hosts'>('hosts');
 	let hosts = $state<Host[]>([]);
@@ -438,8 +448,18 @@
 									<div class="min-w-0">
 										<p class="truncate text-sm font-medium">{host.label}</p>
 										<p class="truncate text-xs text-muted-foreground">{hostSummary(host)}</p>
+										{#if hostConnectionHint(host)}
+											<p class="truncate text-xs text-amber-500">{hostConnectionHint(host)}</p>
+										{/if}
 									</div>
 									<div class="flex shrink-0 gap-2">
+										<Button
+											size="sm"
+											onclick={() => onconnect?.(host)}
+											disabled={busy || sessionBusy || !canConnectHost(host)}
+										>
+											Connect
+										</Button>
 										<Button
 											variant="outline"
 											size="sm"
@@ -623,7 +643,8 @@
 			<DialogHeader>
 				<DialogTitle>{editingHost === null ? 'New host' : 'Edit host'}</DialogTitle>
 				<DialogDescription>
-					Saved hosts are not used to connect yet; that arrives in a later phase.
+					The Credential chosen here is the one its Connect button uses. Secrets stay encrypted and
+					are never shown again.
 				</DialogDescription>
 			</DialogHeader>
 
