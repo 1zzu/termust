@@ -99,6 +99,54 @@ impl SshState {
     }
 }
 
+/// A session that accepts input without connecting anywhere, for tests that
+/// drive the input path on its own.
+///
+/// The session is registered exactly like a real one, so the code under test
+/// reaches it through the same `write` it would use in the app. What it was sent
+/// is collected instead of being written to a socket.
+#[cfg(test)]
+pub(crate) struct RecordedInput {
+    commands: StdMutex<mpsc::Receiver<Command>>,
+}
+
+#[cfg(test)]
+impl RecordedInput {
+    /// Everything sent so far, decoded as UTF-8 text and in order.
+    pub(crate) fn take(&self) -> Vec<String> {
+        let mut received = Vec::new();
+        let mut commands = self
+            .commands
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while let Ok(command) = commands.try_recv() {
+            if let Command::Input(bytes) = command {
+                received.push(String::from_utf8_lossy(&bytes).into_owned());
+            }
+        }
+        received
+    }
+}
+
+#[cfg(test)]
+impl SshState {
+    /// Registers a fake session under this id and hands back what it receives.
+    pub(crate) fn record_input(&self, session_id: &str) -> RecordedInput {
+        let (commands, receiver) = mpsc::channel(COMMAND_QUEUE);
+        self.lock().insert(
+            session_id.to_string(),
+            Session {
+                commands,
+                host_key_decision: None,
+                task: None,
+            },
+        );
+        RecordedInput {
+            commands: StdMutex::new(receiver),
+        }
+    }
+}
+
 /// A running session as seen by the commands. The task itself lives in
 /// `run_session`; this is only the frontend's handle on it.
 struct Session {

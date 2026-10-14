@@ -35,12 +35,13 @@ use super::saved::{self, SavedConnectRequest};
 use super::session::{Command, run_session};
 use super::{
     AuthMethod, COMMAND_QUEUE, ConnectRequest, EVENT_DATA, EVENT_ERROR, EVENT_HOST_KEY,
-    EVENT_STATUS, Notifier, TEST_TASK_TIMEOUT,
+    EVENT_STATUS, Notifier, SshState, TEST_TASK_TIMEOUT,
 };
 use crate::inventory::{
     CredentialSecret, HostInput, KnownKey, create_host_record, create_password_record,
     create_private_key_record, remember_known_host,
 };
+use crate::snippets::{SnippetInput, create_snippet_record, get_snippet, send_content};
 use crate::vault::{Vault, VaultHandle, VaultState, VaultStatus, test_support::TempVault};
 
 /// The master password every live test creates its vault with.
@@ -568,6 +569,29 @@ fn key_secret(private_key: &str, passphrase: Option<&str>) -> CredentialSecret {
     }
 }
 
+/// A session state whose one fake session forwards everything it is sent into a
+/// real session, so a live test can drive the app's input path.
+fn forwarding_session(session_id: &str, target: mpsc::Sender<Command>) -> SshState {
+    let ssh = SshState::default();
+    let (commands, mut receiver) = mpsc::channel(COMMAND_QUEUE);
+    tokio::spawn(async move {
+        while let Some(command) = receiver.recv().await {
+            if target.send(command).await.is_err() {
+                break;
+            }
+        }
+    });
+    ssh.lock().insert(
+        session_id.to_string(),
+        super::Session {
+            commands,
+            host_key_decision: None,
+            task: None,
+        },
+    );
+    ssh
+}
+
 /// Resolves a saved host the way `start_saved_ssh` does, before any session is
 /// spawned.
 async fn resolve_saved(handle: &VaultHandle, host_id: &str) -> Result<ConnectRequest, String> {
@@ -829,6 +853,134 @@ async fn live_saved_host_with_a_changed_host_key_is_blocked() {
         !status_reached(&log, "connected"),
         "a changed host key must never reach a shell: {log:?}"
     );
+}
+
+// --- a snippet, end to end -------------------------------------------------
+
+/// The point of this phase, against a real server: a snippet stored in the vault
+/// is handed to a live shell through the same input path the app uses, and the
+/// remote shell really runs it.
+///
+/// The arithmetic is computed by the remote shell, so the numbers can only
+/// appear in the output if the command ran: the terminal echoing the line back
+/// cannot produce them.
+#[tokio::test]
+#[ignore = "needs a real SSH server; see the module comment"]
+async fn live_snippet_runs_on_the_remote_shell() {
+    let Some(server) = LiveServer::from_env() else {
+        eprintln!("skipping: set TERMUST_LIVE_HOST and TERMUST_LIVE_USER to run the live tests");
+        return;
+    };
+    let Ok(password) = std::env::var("TERMUST_LIVE_PASSWORD") else {
+        eprintln!("skipping: TERMUST_LIVE_PASSWORD is not set");
+        return;
+    };
+
+    const SINGLE: &str = "echo termust-snippet-1c-$((6 * 7))";
+    const MULTI: &str =
+        "echo termust-snippet-multi-a-$((2 + 2))\necho termust-snippet-multi-b-$((3 + 3))";
+
+    // A vault of this test's own, with two stored snippets.
+    let temp = TempVault::new();
+    let mut vault = temp.vault();
+    vault.create(VAULT_PASSWORD).expect("the vault was created");
+    let single = create_snippet_record(
+        &vault,
+        &SnippetInput {
+            name: "Marker".to_string(),
+            content: SINGLE.to_string(),
+        },
+    )
+    .expect("the snippet was stored");
+    let multi = create_snippet_record(
+        &vault,
+        &SnippetInput {
+            name: "Multiline".to_string(),
+            content: MULTI.to_string(),
+        },
+    )
+    .expect("the multiline snippet was stored");
+
+    // A real session, opened the way a saved host opens one.
+    let handle = VaultState::new(vault).handle();
+    let mut session =
+        RunningSession::start_with_vault(password_request(&server, password), handle.clone());
+
+    // The host key has to be approved before anything else happens.
+    assert!(
+        session
+            .saw(|events| host_key_prompt(events).is_some())
+            .await,
+        "no host key prompt arrived: {:?}",
+        session.log()
+    );
+    session.answer_host_key(true);
+    if !session
+        .saw(|events| status_reached(events, "connected"))
+        .await
+    {
+        let outcome = session.shutdown().await;
+        panic!("the session never reached a shell: {outcome:?}");
+    }
+
+    // The session the run path writes to stands in for the one the commands
+    // keep, and forwards what it receives into the live one, so the input really
+    // goes through the path the app uses.
+    let ssh = forwarding_session("live-snippet", session.commands.clone());
+
+    // The content comes from the vault, exactly as `run_snippet` reads it.
+    let content = handle
+        .with(|vault| get_snippet(vault, &single.id))
+        .expect("the snippet was read")
+        .content;
+    assert_eq!(content, SINGLE);
+    send_content(&ssh, "live-snippet", &content).expect("the session accepted the snippet");
+
+    assert!(
+        session
+            .saw(|events| terminal_text(events).contains("termust-snippet-1c-42"))
+            .await,
+        "the remote shell never ran the snippet: {:?}",
+        terminal_text(&session.log())
+    );
+
+    // A snippet with more than one line runs as one piece with one submit.
+    let content = handle
+        .with(|vault| get_snippet(vault, &multi.id))
+        .expect("the snippet was read")
+        .content;
+    send_content(&ssh, "live-snippet", &content).expect("the session accepted the snippet");
+
+    assert!(
+        session
+            .saw(|events| {
+                let text = terminal_text(events);
+                text.contains("termust-snippet-multi-a-4")
+                    && text.contains("termust-snippet-multi-b-6")
+            })
+            .await,
+        "the multiline snippet did not run: {:?}",
+        terminal_text(&session.log())
+    );
+
+    // And the session still takes typed input afterwards.
+    session
+        .send(Command::Input(
+            b"echo termust-after-snippet-$((5 + 5))\n".to_vec(),
+        ))
+        .await;
+    assert!(
+        session
+            .saw(|events| terminal_text(events).contains("termust-after-snippet-10"))
+            .await,
+        "the session stopped taking input after a snippet: {:?}",
+        terminal_text(&session.log())
+    );
+
+    let log = session.log();
+    let outcome = session.shutdown().await;
+    assert!(outcome.is_ok(), "the session failed: {outcome:?}");
+    assert_no_error_event(log);
 }
 
 /// This one needs no server: a saved host without a credential has to fail

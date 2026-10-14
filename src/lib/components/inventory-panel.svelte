@@ -64,26 +64,51 @@
 		type HostFormValues,
 		type KnownHost
 	} from '#lib/inventory';
+	import {
+		SNIPPET_SECRET_NOTE,
+		createSnippet,
+		deleteSnippet,
+		emptySnippetForm,
+		listSnippets,
+		runEnabled,
+		runSnippet,
+		runSnippetRequest,
+		snippetFormFor,
+		snippetFormProblem,
+		snippetInput,
+		snippetPreview,
+		updateSnippet,
+		type Snippet,
+		type SnippetFormValues
+	} from '#lib/snippets';
+	import type { ConnectionStatus } from '#lib/types';
 	import type { VaultStatus } from '#lib/vault';
 
 	// The page owns the vault status and the session, so this panel is told when
-	// the vault opens or closes, and when a session is already running: a second
-	// one would have to share the terminal the first one is using.
+	// the vault opens or closes, which session is running (a second one would have
+	// to share the terminal the first one is using), and what that session is.
 	let {
-		status,
+		vaultStatus,
+		sessionStatus = 'idle',
+		sessionId,
+		sessionTarget = 'Quick Connect',
 		sessionBusy = false,
 		onconnect
 	}: {
-		status: VaultStatus | undefined;
+		vaultStatus: VaultStatus | undefined;
+		sessionStatus?: ConnectionStatus;
+		sessionId?: string;
+		sessionTarget?: string;
 		sessionBusy?: boolean;
 		onconnect?: (host: Host) => void;
 	} = $props();
 
-	let section = $state<'hosts' | 'credentials' | 'groups' | 'known_hosts'>('hosts');
+	let section = $state<'hosts' | 'credentials' | 'groups' | 'known_hosts' | 'snippets'>('hosts');
 	let hosts = $state<Host[]>([]);
 	let groups = $state<Group[]>([]);
 	let credentials = $state<CredentialSummary[]>([]);
 	let knownHosts = $state<KnownHost[]>([]);
+	let snippets = $state<Snippet[]>([]);
 	let errorText = $state('');
 	let busy = $state(false);
 
@@ -106,7 +131,19 @@
 	let credentialTarget = $state<CredentialSummary | null>(null);
 	let credentialForm = $state<CredentialFormValues>(emptyCredentialForm());
 
-	const visible = $derived(inventoryVisible(status));
+	// Snippet dialog. `editingSnippet` is null while creating a new one.
+	let snippetOpen = $state(false);
+	let editingSnippet = $state<string | null>(null);
+	let snippetForm = $state<SnippetFormValues>(emptySnippetForm());
+	// The snippet a delete confirmation is about, and the preview a run waits on.
+	let snippetDeleteTarget = $state<Snippet | null>(null);
+	let runTarget = $state<Snippet | null>(null);
+	let running = $state(false);
+
+	const visible = $derived(inventoryVisible(vaultStatus));
+	// At most one run at a time, and only against a session that is really up.
+	// When a session ends while the preview is open, this turns false by itself.
+	const canRun = $derived(runEnabled(sessionStatus, sessionId, running));
 	// bits-ui reads a closed trigger's text from these, so a select shows a name
 	// instead of the raw id it actually stores.
 	const groupOptions = $derived([
@@ -140,6 +177,7 @@
 			credentials = await listCredentials();
 			hosts = await listHosts();
 			knownHosts = await listKnownHosts();
+			snippets = await listSnippets();
 		} catch (error) {
 			errorText = errorMessage(error);
 		}
@@ -164,13 +202,18 @@
 		}
 	}
 
-	/** Throws away everything this panel holds: used when the vault locks. */
+	/**
+	 * Throws away everything this panel holds: used when the vault locks. The
+	 * snippets go with it, and every snippet dialog closes, so nothing decrypted
+	 * is left on screen.
+	 */
 	function clear() {
 		const empty = emptyInventory();
 		hosts = empty.hosts;
 		groups = empty.groups;
 		credentials = empty.credentials;
 		knownHosts = empty.knownHosts;
+		snippets = empty.snippets;
 		forgetTarget = null;
 		hostOpen = false;
 		editingHost = null;
@@ -181,6 +224,12 @@
 		credentialOpen = false;
 		credentialTarget = null;
 		credentialForm = emptyCredentialForm();
+		snippetOpen = false;
+		editingSnippet = null;
+		snippetForm = emptySnippetForm();
+		snippetDeleteTarget = null;
+		runTarget = null;
+		running = false;
 		errorText = '';
 	}
 
@@ -383,6 +432,80 @@
 			credentials = await listCredentials();
 		});
 	}
+
+	// --- snippets ---
+
+	function openCreateSnippet() {
+		editingSnippet = null;
+		snippetForm = emptySnippetForm();
+		snippetOpen = true;
+	}
+
+	function openEditSnippet(snippet: Snippet) {
+		editingSnippet = snippet.id;
+		snippetForm = snippetFormFor(snippet);
+		snippetOpen = true;
+	}
+
+	async function submitSnippet(event: SubmitEvent) {
+		event.preventDefault();
+		const problem = snippetFormProblem(snippetForm);
+		if (problem) {
+			errorText = problem;
+			return;
+		}
+
+		const input = snippetInput(snippetForm);
+		const editing = editingSnippet;
+		await run(async () => {
+			if (editing === null) {
+				await createSnippet(input);
+			} else {
+				await updateSnippet(editing, input);
+			}
+			snippets = await listSnippets();
+			snippetOpen = false;
+			snippetForm = emptySnippetForm();
+		});
+	}
+
+	async function confirmDeleteSnippet() {
+		const target = snippetDeleteTarget;
+		if (!target) return;
+		await run(async () => {
+			await deleteSnippet(target.id);
+			snippets = await listSnippets();
+			snippetDeleteTarget = null;
+		});
+	}
+
+	/** Opens the preview. Opening it runs nothing: only the confirm button does. */
+	function openRunPreview(snippet: Snippet) {
+		runTarget = snippet;
+	}
+
+	/**
+	 * Sends the snippet the preview is showing to the session that is up.
+	 *
+	 * A failure keeps the dialog open and is reported: the snippet is never
+	 * presented as having run when the backend refused it. Closing the dialog, on
+	 * the other hand, is a cancel, so nothing is sent.
+	 */
+	async function confirmRunSnippet() {
+		const target = runTarget;
+		if (!target || !canRun) return;
+
+		running = true;
+		errorText = '';
+		try {
+			await runSnippet(runSnippetRequest(sessionId ?? '', target.id));
+			runTarget = null;
+		} catch (error) {
+			errorText = errorMessage(error);
+		} finally {
+			running = false;
+		}
+	}
 </script>
 
 {#if visible}
@@ -423,6 +546,13 @@
 					onclick={() => show('known_hosts')}
 				>
 					Known hosts ({knownHosts.length})
+				</Button>
+				<Button
+					size="sm"
+					variant={section === 'snippets' ? 'default' : 'outline'}
+					onclick={() => show('snippets')}
+				>
+					Snippets ({snippets.length})
 				</Button>
 			</div>
 
@@ -521,6 +651,64 @@
 											variant="outline"
 											size="sm"
 											onclick={() => removeCredential(credential)}
+											disabled={busy}
+										>
+											Delete
+										</Button>
+									</div>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+			{:else if section === 'snippets'}
+				<div class="grid gap-3">
+					<div class="flex items-center justify-between">
+						<h3 class="text-sm font-medium">Snippets</h3>
+						<Button size="sm" onclick={openCreateSnippet} disabled={busy}>New snippet</Button>
+					</div>
+					<p class="text-xs text-muted-foreground">
+						Commands kept encrypted in this vault. One is only ever sent to the session that is
+						already open, after you have read it in full and confirmed. {SNIPPET_SECRET_NOTE}
+					</p>
+					{#if snippets.length === 0}
+						<p class="text-xs text-muted-foreground">No snippets yet.</p>
+					{:else}
+						<ul class="grid gap-2">
+							{#each snippets as snippet (snippet.id)}
+								<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
+									<div class="min-w-0">
+										<p class="truncate text-sm font-medium">{snippet.name}</p>
+										<p class="truncate font-mono text-xs text-muted-foreground">
+											{snippetPreview(snippet.content)}
+										</p>
+										<p class="truncate text-xs text-muted-foreground">
+											updated {addedAt(snippet.updatedAt)}
+										</p>
+									</div>
+									<div class="flex shrink-0 gap-2">
+										<Button
+											size="sm"
+											onclick={() => openRunPreview(snippet)}
+											disabled={busy || !canRun}
+											title={canRun
+												? 'Read this command before it is sent'
+												: 'Connect a session first'}
+										>
+											Run
+										</Button>
+										<Button
+											variant="outline"
+											size="sm"
+											onclick={() => openEditSnippet(snippet)}
+											disabled={busy}
+										>
+											Edit
+										</Button>
+										<Button
+											variant="outline"
+											size="sm"
+											onclick={() => (snippetDeleteTarget = snippet)}
 											disabled={busy}
 										>
 											Delete
@@ -830,6 +1018,109 @@
 					</Button>
 				</DialogFooter>
 			</form>
+		</DialogContent>
+	</Dialog>
+
+	<Dialog bind:open={snippetOpen}>
+		<DialogContent class="sm:max-w-xl">
+			<DialogHeader>
+				<DialogTitle>{editingSnippet === null ? 'New snippet' : 'Edit snippet'}</DialogTitle>
+				<DialogDescription>
+					The command is stored encrypted in this vault and is only sent to a session you run it
+					against, after you confirm the preview. Nothing here runs on its own.
+					{SNIPPET_SECRET_NOTE}
+				</DialogDescription>
+			</DialogHeader>
+
+			<form class="grid gap-3" onsubmit={submitSnippet}>
+				<div class="grid gap-1.5">
+					<Label for="snippet-name">Name</Label>
+					<Input id="snippet-name" bind:value={snippetForm.name} disabled={busy} />
+				</div>
+				<div class="grid gap-1.5">
+					<Label for="snippet-content">Command</Label>
+					<Textarea
+						id="snippet-content"
+						rows={8}
+						class="font-mono text-xs"
+						placeholder="systemctl restart app"
+						bind:value={snippetForm.content}
+						disabled={busy}
+					/>
+					<p class="text-xs text-muted-foreground">
+						More than one line is fine. Termust does not check the syntax: the remote shell decides
+						what the command means.
+					</p>
+				</div>
+
+				<DialogFooter>
+					<Button type="button" variant="outline" onclick={() => (snippetOpen = false)}>
+						Cancel
+					</Button>
+					<Button type="submit" disabled={busy}>
+						{editingSnippet === null ? 'Create snippet' : 'Save snippet'}
+					</Button>
+				</DialogFooter>
+			</form>
+		</DialogContent>
+	</Dialog>
+
+	<Dialog
+		open={snippetDeleteTarget !== null}
+		onOpenChange={(open) => !open && (snippetDeleteTarget = null)}
+	>
+		<DialogContent class="sm:max-w-md">
+			<DialogHeader>
+				<DialogTitle>Delete this snippet?</DialogTitle>
+				<DialogDescription>
+					It disappears from the list and can no longer be read or run. Nothing on the server is
+					touched: a snippet only ever did something when you ran it.
+				</DialogDescription>
+			</DialogHeader>
+
+			{#if snippetDeleteTarget}
+				<p class="truncate text-sm font-medium">{snippetDeleteTarget.name}</p>
+			{/if}
+
+			<DialogFooter>
+				<Button variant="outline" onclick={() => (snippetDeleteTarget = null)}>Cancel</Button>
+				<Button variant="destructive" onclick={confirmDeleteSnippet} disabled={busy}>Delete</Button>
+			</DialogFooter>
+		</DialogContent>
+	</Dialog>
+
+	<Dialog
+		open={runTarget !== null}
+		onOpenChange={(open) => !open && !running && (runTarget = null)}
+	>
+		<DialogContent class="sm:max-w-2xl">
+			<DialogHeader>
+				<DialogTitle>Run this snippet?</DialogTitle>
+				<DialogDescription>
+					This sends the command to the shell of {sessionTarget}. Termust does not read the command
+					itself, so check it here before it goes.
+				</DialogDescription>
+			</DialogHeader>
+
+			{#if runTarget}
+				<div class="grid gap-2">
+					<p class="truncate text-sm font-medium">{runTarget.name}</p>
+					<pre
+						class="max-h-64 overflow-auto rounded-md border bg-muted p-3 font-mono text-xs break-words whitespace-pre-wrap">{runTarget.content}</pre>
+					<p class="text-xs text-amber-500">
+						It is sent as typed input to the shell that is already open.
+					</p>
+				</div>
+			{/if}
+
+			<DialogFooter>
+				<Button variant="outline" onclick={() => (runTarget = null)} disabled={running}>
+					Cancel
+				</Button>
+				<Button onclick={confirmRunSnippet} disabled={!canRun}>
+					{running ? 'Running…' : 'Run snippet'}
+				</Button>
+			</DialogFooter>
 		</DialogContent>
 	</Dialog>
 {/if}

@@ -1,8 +1,8 @@
 # Model data lokal v1
 
-Dokumen ini menjelaskan Group, Host, dan Credential pada Phase 1B1: bentuk data, object kind,
-versi payload, relasi, dan aturan delete. Format penyimpanan dan crypto-nya tidak berubah dan
-tetap dijelaskan di [`vault-format-v1.md`](vault-format-v1.md).
+Dokumen ini menjelaskan Group, Host, dan Credential pada Phase 1B1 serta Snippet pada Phase 1C:
+bentuk data, object kind, versi payload, relasi, dan aturan delete. Format penyimpanan dan crypto-nya
+tidak berubah dan tetap dijelaskan di [`vault-format-v1.md`](vault-format-v1.md).
 
 ## Tempat penyimpanan
 
@@ -14,6 +14,7 @@ Tidak ada tabel baru. Setiap record adalah satu row `vault_objects` dengan salah
 | Host       | `host`       |
 | Credential | `credential` |
 | Known host | `known_host` |
+| Snippet    | `snippet`    |
 
 `kind` ikut menjadi bagian Additional Authenticated Data, jadi sebuah object tidak dapat dibaca
 sebagai kind lain: ciphertext group tidak akan pernah bisa diparse sebagai Host. Enkripsi, nonce,
@@ -173,6 +174,51 @@ Sesi SSH dari saved Host dibaca di satu tempat, `credential_for_host`, dan hanya
   ke frontend; byte-nya di-zeroize saat sesi selesai. Tidak ada field baru pada payload `host`
   atau `credential`, jadi format object tidak berubah.
 
+## Snippet (Phase 1C)
+
+Satu perintah SSH pendek yang disimpan terenkripsi.
+
+```json
+{
+	"version": 1,
+	"id": "…",
+	"name": "Restart app",
+	"content": "systemctl restart app",
+	"createdAt": 1760000000,
+	"updatedAt": 1760000000
+}
+```
+
+- `name` wajib setelah trim dan maksimum 120 karakter.
+- `content` wajib, panjangnya 1 byte sampai 64 KiB UTF-8, dan tidak boleh memuat NUL byte.
+- `content` disimpan apa adanya: tidak di-trim, tidak dinormalisasi, quoting dan baris barunya utuh.
+  Termust tidak memparse sintaks shell, jadi tidak ada validasi yang bergantung pada arti command.
+- `name` tidak harus unik; `id` adalah identitas sebenarnya.
+- Snippet tidak punya relasi ke Host, Group, maupun Credential. Payload v1 tidak punya tags, folder,
+  variables, atau secret field.
+- Daftar aktif diurutkan berdasarkan `name` (tanpa memandang huruf besar/kecil) lalu `id`, sehingga
+  urutannya stabil di setiap pembacaan.
+- Delete memakai tombstone yang sama: snippet yang dihapus hilang dari daftar aktif dan tidak dapat
+  dibaca atau dijalankan lagi.
+
+### Snippet bukan Credential
+
+Isi snippet terenkripsi seperti object lain, tetapi snippet **bukan** secret store: isinya dikirim ke
+shell jarak jauh sebagai input biasa dan akan terlihat di terminal. Password, token, dan private key
+tetap milik Credential; secret variables adalah fitur terpisah di masa depan.
+
+### Menjalankan snippet
+
+Frontend hanya mengirim `sessionId` dan `snippetId`; isi diselesaikan backend dari vault. Sebelum
+eksekusi, UI selalu menampilkan preview lengkap dan meminta konfirmasi, dan tidak ada eksekusi otomatis
+— tidak saat snippet dibuat, diedit, didaftar, saat vault dibuka, maupun saat koneksi dibuat.
+
+Content dikirim ke PTY session SSH yang dipilih memakai primitive input yang sama dengan keyboard
+terminal, bukan shell lokal atau process lokal apa pun. Satu karakter Enter dikirim sebagai input
+terpisah setelah isi, dan tidak ditambahkan bila isi sudah berakhir dengan baris baru, supaya snippet
+seperti `echo one` dan `echo one\n` berperilaku sama: tepat satu submit. Jika tidak ada session yang
+aktif, command ditolak dan tidak ada yang dikirim.
+
 ## Delete
 
 Semua delete memakai tombstone: row tetap ada dan `deleted_at` diisi. Object yang sudah dihapus
@@ -180,6 +226,7 @@ hilang dari daftar aktif dan tidak dapat dibaca lagi.
 
 ## Yang belum ada
 
-Multi-sesi/multi-tab, reconnect otomatis, session restore, auto-run command, SSH agent, certificate,
+Multi-sesi/multi-tab, reconnect otomatis, session restore, auto-run command, snippet variables,
+snippet tags, snippet folders, snippet history, snippet sharing/sync, SSH agent, certificate,
 keyboard-interactive, credential prompt fallback, tags, notes, search, import `known_hosts` OpenSSH,
 wildcard host, jump host, backup, auto-lock, dan sinkronisasi berada di luar fase ini.

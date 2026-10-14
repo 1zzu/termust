@@ -4,6 +4,7 @@
 //! commands it needs and keeps the session state alive between calls.
 
 mod inventory;
+mod snippets;
 mod ssh;
 // The vault is a self-contained core the app builds on; keeping it public lets
 // its API be used and tested directly, without going through the frontend.
@@ -110,7 +111,12 @@ pub fn run() {
             inventory::replace_private_key,
             inventory::delete_credential,
             inventory::list_known_hosts,
-            inventory::forget_known_host
+            inventory::forget_known_host,
+            snippets::list_snippets,
+            snippets::create_snippet,
+            snippets::update_snippet,
+            snippets::delete_snippet,
+            snippets::run_snippet
         ])
         .run(tauri::generate_context!());
 
@@ -519,6 +525,330 @@ mod tests {
             error,
             json!("This saved host has no credential yet. Edit the host and choose one.")
         );
+    }
+
+    /// A marker that must never appear in an answer or a payload. It is the
+    /// content of the snippet the snippet commands are tested with.
+    const SNIPPET_CONTENT: &str = "marker-snippet-content-5e1c";
+    /// The name of that snippet, checked the same way.
+    const SNIPPET_NAME: &str = "marker-snippet-name-9b3d";
+
+    /// A window wired like the app for the snippet commands, over a vault of its
+    /// own holding one snippet, either left open or locked.
+    ///
+    /// The existing snippet is written the way the command writes one, before
+    /// the vault is handed to the app, so a locked window is locked for real.
+    fn snippet_window(
+        open: bool,
+    ) -> (
+        App<MockRuntime>,
+        WebviewWindow<MockRuntime>,
+        TempVault,
+        String,
+    ) {
+        let temp = TempVault::new();
+        let mut vault = temp.vault();
+        vault.create(VAULT_PASSWORD).expect("the vault was created");
+
+        let snippet = crate::snippets::create_snippet_record(
+            &vault,
+            &crate::snippets::SnippetInput {
+                name: SNIPPET_NAME.to_string(),
+                content: SNIPPET_CONTENT.to_string(),
+            },
+        )
+        .expect("the snippet was created");
+
+        if !open {
+            vault.lock();
+        }
+
+        let app = mock_builder()
+            .manage(SshState::default())
+            .manage(VaultState::new(vault))
+            .invoke_handler(tauri::generate_handler![
+                crate::snippets::list_snippets,
+                crate::snippets::create_snippet,
+                crate::snippets::update_snippet,
+                crate::snippets::delete_snippet,
+                crate::snippets::run_snippet
+            ])
+            .build(mock_context(noop_assets()))
+            .expect("the app built");
+        let webview = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("the window built");
+
+        (app, webview, temp, snippet.id)
+    }
+
+    fn snippet_input(name: &str, content: &str) -> Value {
+        json!({ "name": name, "content": content })
+    }
+
+    /// The CRUD contract: the command names, the argument names and the field
+    /// names of both directions. A snippet reaches the frontend with its
+    /// content, because the UI has to show it before anyone can run it.
+    #[test]
+    fn the_snippet_commands_answer_over_ipc() {
+        let (_app, webview, _temp, snippet_id) = snippet_window(true);
+        let id = snippet_id.as_str();
+
+        let listed = invoke(&webview, "list_snippets", json!({})).expect("the list answered");
+        assert_eq!(
+            listed,
+            json!([{
+                "version": 1,
+                "id": id,
+                "name": SNIPPET_NAME,
+                "content": SNIPPET_CONTENT,
+                "createdAt": listed[0]["createdAt"],
+                "updatedAt": listed[0]["updatedAt"],
+            }]),
+            "the frontend contract changed"
+        );
+
+        let created = invoke(
+            &webview,
+            "create_snippet",
+            json!({ "snippet": snippet_input("Deploy", "git pull\nmake") }),
+        )
+        .expect("the snippet was created");
+        assert_eq!(created["name"], "Deploy");
+        assert_eq!(created["content"], "git pull\nmake");
+
+        let updated = invoke(
+            &webview,
+            "update_snippet",
+            json!({ "id": created["id"], "snippet": snippet_input("Deploy", "git pull") }),
+        )
+        .expect("the snippet was updated");
+        assert_eq!(updated["id"], created["id"]);
+        assert_eq!(
+            updated["createdAt"], created["createdAt"],
+            "createdAt changed"
+        );
+        assert_eq!(updated["content"], "git pull");
+
+        assert!(
+            invoke(&webview, "delete_snippet", json!({ "id": created["id"] })).is_ok(),
+            "deleting a snippet failed"
+        );
+        let remaining = invoke(&webview, "list_snippets", json!({})).expect("the list answered");
+        assert_eq!(remaining.as_array().map(Vec::len), Some(1));
+
+        // A renamed argument is a rejected call rather than a silent no-op.
+        assert!(
+            invoke(
+                &webview,
+                "delete_snippet",
+                json!({ "snippetId": created["id"] })
+            )
+            .is_err(),
+            "an unknown argument name was accepted"
+        );
+    }
+
+    /// Create and update take only the two fields they need: an id, a timestamp
+    /// or an object kind in the payload is refused instead of ignored.
+    #[test]
+    fn a_snippet_payload_carries_no_field_of_its_own() {
+        let (_app, webview, _temp, snippet_id) = snippet_window(true);
+        let id = snippet_id.as_str();
+
+        for extra in [
+            (json!({ "id": "other" }), "an id"),
+            (json!({ "version": 99 }), "a version"),
+            (json!({ "createdAt": 1 }), "a created time"),
+            (json!({ "sessionId": "s-1" }), "a session id"),
+        ] {
+            let mut snippet = snippet_input("Deploy", "ls");
+            snippet
+                .as_object_mut()
+                .expect("the snippet is an object")
+                .extend(extra.0.as_object().expect("an object").clone());
+
+            let error = invoke(&webview, "create_snippet", json!({ "snippet": snippet }))
+                .expect_err(extra.1);
+            assert!(!error.to_string().contains(SNIPPET_CONTENT));
+        }
+
+        assert!(
+            invoke(&webview, "update_snippet", json!({ "id": id })).is_err(),
+            "a payload without a snippet was accepted"
+        );
+    }
+
+    /// `run_snippet` names a session and a snippet and nothing else. In
+    /// particular it takes no content: the text a session receives can only come
+    /// from the vault.
+    #[test]
+    fn the_run_snippet_payload_carries_only_two_ids() {
+        let (app, webview, _temp, snippet_id) = snippet_window(true);
+        let id = snippet_id.as_str();
+        let recorded = app.state::<SshState>().record_input("session-1");
+
+        for (extra, why) in [
+            (json!({ "content": "whoami" }), "content"),
+            (json!({ "command": "whoami" }), "a command"),
+            (json!({ "data": "whoami\n" }), "terminal data"),
+            (json!({ "password": "hunter2" }), "a password"),
+            (json!({ "name": SNIPPET_NAME }), "a name"),
+        ] {
+            let mut request = json!({ "sessionId": "session-1", "snippetId": id });
+            request
+                .as_object_mut()
+                .expect("the request is an object")
+                .extend(extra.as_object().expect("an object").clone());
+
+            let error =
+                invoke(&webview, "run_snippet", json!({ "request": request })).expect_err(why);
+            assert!(
+                !error.to_string().contains(SNIPPET_CONTENT),
+                "{why} leaked into {error}"
+            );
+        }
+
+        // Nothing was sent to the session while those payloads were refused.
+        assert!(recorded.take().is_empty(), "a refused request sent input");
+
+        // The argument name is part of the contract too.
+        assert!(
+            invoke(
+                &webview,
+                "run_snippet",
+                json!({ "snippet": { "sessionId": "session-1", "snippetId": id } })
+            )
+            .is_err(),
+            "a renamed argument was accepted"
+        );
+    }
+
+    /// The happy path over the real dispatch: the content stored in the vault is
+    /// what the session receives, followed by exactly one submit keystroke.
+    #[test]
+    fn running_a_snippet_sends_the_stored_content_and_one_submit() {
+        let (app, webview, _temp, snippet_id) = snippet_window(true);
+        let id = snippet_id.as_str();
+        let recorded = app.state::<SshState>().record_input("session-1");
+
+        let response = invoke(
+            &webview,
+            "run_snippet",
+            json!({ "request": { "sessionId": "session-1", "snippetId": id } }),
+        );
+        assert!(response.is_ok(), "running the snippet failed: {response:?}");
+
+        assert_eq!(
+            recorded.take(),
+            vec![SNIPPET_CONTENT.to_string(), "\r".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_snippet_commands_refuse_a_locked_vault() {
+        let (_app, webview, _temp, snippet_id) = snippet_window(false);
+        let id = snippet_id.as_str();
+
+        let error = invoke(&webview, "list_snippets", json!({})).expect_err("a locked vault");
+        assert_eq!(error, json!("The vault is locked. Unlock it first."));
+
+        for call in [
+            (
+                "create_snippet",
+                json!({ "snippet": snippet_input("Deploy", "ls") }),
+            ),
+            (
+                "update_snippet",
+                json!({ "id": id, "snippet": snippet_input("Deploy", "ls") }),
+            ),
+            ("delete_snippet", json!({ "id": id })),
+            (
+                "run_snippet",
+                json!({ "request": { "sessionId": "session-1", "snippetId": id } }),
+            ),
+        ] {
+            let error = match invoke(&webview, call.0, call.1) {
+                Ok(_) => panic!("{} answered with a locked vault", call.0),
+                Err(error) => error,
+            };
+            assert_eq!(error, json!("The vault is locked. Unlock it first."));
+        }
+    }
+
+    #[test]
+    fn the_snippet_commands_refuse_an_unknown_or_deleted_snippet() {
+        let (app, webview, _temp, snippet_id) = snippet_window(true);
+        let id = snippet_id.as_str();
+        app.state::<SshState>().record_input("session-1");
+
+        let missing = invoke(
+            &webview,
+            "run_snippet",
+            json!({ "request": { "sessionId": "session-1", "snippetId": "no-such-snippet" } }),
+        )
+        .expect_err("an unknown snippet cannot run");
+        assert_eq!(missing, json!("That snippet no longer exists."));
+        assert!(!missing.to_string().contains(SNIPPET_CONTENT));
+
+        assert!(
+            invoke(&webview, "delete_snippet", json!({ "id": id })).is_ok(),
+            "deleting a snippet failed"
+        );
+        let deleted = invoke(
+            &webview,
+            "run_snippet",
+            json!({ "request": { "sessionId": "session-1", "snippetId": id } }),
+        )
+        .expect_err("a deleted snippet cannot run");
+        assert_eq!(deleted, json!("That snippet no longer exists."));
+        assert!(
+            !deleted.to_string().contains(SNIPPET_CONTENT),
+            "a deleted snippet answered with its content"
+        );
+    }
+
+    #[test]
+    fn running_a_snippet_without_a_session_is_refused() {
+        let (_app, webview, _temp, snippet_id) = snippet_window(true);
+        let id = snippet_id.as_str();
+
+        let error = invoke(
+            &webview,
+            "run_snippet",
+            json!({ "request": { "sessionId": "session-1", "snippetId": id } }),
+        )
+        .expect_err("no session can accept a snippet");
+
+        assert_eq!(error, json!("This session is not connected."));
+        assert!(!error.to_string().contains(SNIPPET_CONTENT));
+    }
+
+    /// Validation errors name the field and never repeat the text they refused.
+    #[test]
+    fn snippet_validation_errors_never_repeat_the_content() {
+        let (_app, webview, _temp, _id) = snippet_window(true);
+
+        for (snippet, why) in [
+            (snippet_input("   ", SNIPPET_CONTENT), "a blank name"),
+            (snippet_input(SNIPPET_NAME, ""), "empty content"),
+            (
+                snippet_input(SNIPPET_NAME, &format!("{}x", "a".repeat(65_536))),
+                "content over the limit",
+            ),
+            (snippet_input(SNIPPET_NAME, "echo\u{0}"), "a NUL byte"),
+        ] {
+            let error =
+                invoke(&webview, "create_snippet", json!({ "snippet": snippet })).expect_err(why);
+            assert!(
+                !error.to_string().contains(SNIPPET_CONTENT),
+                "{why} leaked the content into {error}"
+            );
+            assert!(
+                !error.to_string().contains(SNIPPET_NAME),
+                "{why} leaked the name into {error}"
+            );
+        }
     }
 
     /// Quick Connect still answers over the same dispatch, and still reports its

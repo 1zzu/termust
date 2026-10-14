@@ -327,7 +327,10 @@
 		<VaultPanel bind:status={vaultStatus} />
 
 		<InventoryPanel
-			status={vaultStatus}
+			{vaultStatus}
+			sessionStatus={status}
+			{sessionId}
+			sessionTarget={sessionLabel(activeHostLabel)}
 			sessionBusy={busy || connected}
 			onconnect={connectSavedHost}
 		/>

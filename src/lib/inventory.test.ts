@@ -61,7 +61,13 @@ describe('emptyInventory', () => {
 	it('empties every list the panel holds when the vault locks', () => {
 		const cleared = emptyInventory();
 
-		expect(cleared).toEqual({ hosts: [], groups: [], credentials: [], knownHosts: [] });
+		expect(cleared).toEqual({
+			hosts: [],
+			groups: [],
+			credentials: [],
+			knownHosts: [],
+			snippets: []
+		});
 		// A new object each time, so two callers never share one array.
 		expect(emptyInventory()).not.toBe(cleared);
 	});

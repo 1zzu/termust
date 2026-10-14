@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 
+import type { Snippet } from './snippets';
 import type { VaultStatus } from './vault';
 
 /**
@@ -55,6 +56,7 @@ export interface Inventory {
 	groups: Group[];
 	credentials: CredentialSummary[];
 	knownHosts: KnownHost[];
+	snippets: Snippet[];
 }
 
 /**
@@ -63,7 +65,7 @@ export interface Inventory {
  * means no two places can end up sharing one array.
  */
 export function emptyInventory(): Inventory {
-	return { hosts: [], groups: [], credentials: [], knownHosts: [] };
+	return { hosts: [], groups: [], credentials: [], knownHosts: [], snippets: [] };
 }
 
 // --- IPC ------------------------------------------------------------------

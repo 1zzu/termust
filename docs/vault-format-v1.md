@@ -119,7 +119,9 @@ Aturan yang berlaku saat ini:
 - Master password, dan tidak ada hash master password sebagai mekanisme unlock.
 - Vault Key dalam bentuk plaintext (hanya wrapped).
 - Payload object dalam bentuk plaintext.
-- Metadata host yang dapat dicari: Phase 1A belum menyimpan host atau credential sama sekali.
+- Metadata yang dapat dicari: nama host, username, nama credential, fingerprint, serta nama dan isi
+  snippet seluruhnya berada di dalam payload terenkripsi. Plaintext di `vault_objects` hanya `id`,
+  `kind`, nonce, `crypto_version`, dan timestamp.
 
 ## Pemulihan
 

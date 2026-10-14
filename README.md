@@ -24,7 +24,8 @@ Di atas baseline itu, Phase 1A menambahkan fondasi **encrypted local vault**: va
 dibuat dengan master password, disimpan terenkripsi di SQLite, serta dapat dikunci dan dibuka
 kembali. Phase 1B1 lalu memakai vault itu untuk menyimpan **Group, Credential, dan Host**:
 CRUD lokal yang seluruhnya terenkripsi, lengkap dengan relasi Host ke Group dan Credential.
-Menghubungkan saved Host ke sesi SSH belum termasuk dan dikerjakan di Phase 1B2.
+Phase 1B2 menambahkan known host yang persisten dan Connect dari saved Host, dan Phase 1C
+menambahkan **snippet perintah SSH** yang tersimpan di vault yang sama.
 
 ## Prasyarat
 
@@ -82,6 +83,9 @@ packaging, bukan kegagalan kode.
   SSH memakai Credential yang tertaut, tanpa mengetik ulang password atau private key. Frontend
   hanya mengirim id Host; address, username, dan secret dibaca backend dari vault. Lihat bagian
   _Saved Host connect_.
+- **Encrypted snippets (Phase 1C).** Snippet perintah SSH yang disimpan terenkripsi di vault yang
+  sama, dikelola dari UI, selalu ditampilkan lengkap sebelum dijalankan, dan hanya dikirim ke session
+  SSH yang sudah aktif setelah pengguna menekan tombol konfirmasi. Lihat bagian _Snippets_.
 - **Quick Connect.** Form koneksi langsung tanpa menyimpan host: host atau IP, port (default 22),
   username, pilihan autentikasi, dan kredensial sesuai pilihan. Form ini tetap terpisah dan tidak
   memakai saved Host maupun saved Credential.
@@ -188,12 +192,46 @@ Phase 1A.
 
 Aturan identitas dan payload-nya ada di [`docs/local-data-model-v1.md`](docs/local-data-model-v1.md).
 
+## Snippets (Phase 1C)
+
+Snippet adalah perintah SSH pendek yang disimpan sebagai object terenkripsi di vault yang sama,
+dengan `kind` `snippet`. Tidak ada tabel baru dan tidak ada perubahan pada crypto Phase 1A. Snippet
+tidak punya relasi ke Host, Group, atau Credential.
+
+- CRUD lengkap (`list_snippets`, `create_snippet`, `update_snippet`, `delete_snippet`), semuanya
+  menuntut vault dalam keadaan unlocked. Saat vault terkunci seluruh command ditolak dan daftar
+  snippet di frontend dibersihkan, termasuk dialog yang sedang terbuka.
+- Delete memakai tombstone, sama seperti object vault lainnya.
+- Nama dan isi snippet berada di dalam payload terenkripsi, jadi tidak ada kolom plaintext database
+  yang memuatnya. Panjang nama 1–120 karakter setelah trim; isi 1 byte sampai 64 KiB UTF-8, tanpa
+  NUL byte. Nama tidak harus unik: `id` adalah identitas sebenarnya.
+- Daftar diurutkan berdasarkan nama (tanpa memandang huruf besar/kecil) lalu `id`, sehingga urutannya
+  stabil.
+- Menjalankan snippet (`run_snippet`) hanya mengirim `sessionId` dan `snippetId`. Backend membaca isi
+  dari vault, memastikan session SSH masih aktif, lalu mengirim isi itu ke PTY jarak jauh memakai
+  primitive input yang sama dengan keyboard terminal — bukan shell lokal, bukan `Command`, dan tidak
+  ada jalur input kedua. Satu karakter Enter dikirim terpisah, dan tidak ditambahkan bila isi sudah
+  berakhir dengan baris baru.
+- Snippet selalu melewati preview dialog: nama, isi lengkap dengan font monospace, target session,
+  dan peringatan bahwa command akan dikirim ke shell yang sedang aktif. Menutup dialog sama dengan
+  cancel, dan hanya tombol konfirmasi yang memanggil `run_snippet`. Isi ditampilkan sebagai teks,
+  bukan HTML.
+- Tidak ada auto-run: snippet tidak dijalankan saat dibuat, diedit, didaftar, saat vault dibuka,
+  maupun saat koneksi dibuat. Tidak ada riwayat eksekusi dan tidak ada shortcut keyboard.
+- Termust tidak memahami sintaks shell: isi snippet tidak diparse, tidak dinormalisasi, dan tidak
+  diperiksa. Snippet juga **bukan** tempat menyimpan password, token, atau private key — itu tetap
+  milik Credential, dan secret variables adalah fitur terpisah di masa depan.
+
+Batas ukuran, validasi, dan bentuk payload-nya ada di
+[`docs/local-data-model-v1.md`](docs/local-data-model-v1.md).
+
 ## Yang sengaja belum dibuat
 
 Multi-tab atau multi-sesi terminal, split pane, reconnect otomatis, session restore, auto-run
 command, SSH agent, certificate, keyboard-interactive, credential prompt fallback, import OpenSSH
-config, import `known_hosts` OpenSSH, wildcard host, jump host, SFTP, port forwarding, snippets,
-tags, notes, search, backup/export/import, auto-lock timer, keychain/biometric unlock, sinkronisasi,
+config, import `known_hosts` OpenSSH, wildcard host, jump host, SFTP, port forwarding, tags, notes,
+search, snippet variables, snippet tags, snippet folders, snippet history, snippet sharing atau sync,
+backup/export/import, auto-lock timer, keychain/biometric unlock, sinkronisasi,
 enkripsi E2EE lintas perangkat, akun, backend Axum/self-hosted, web SSH relay, mobile UI, tim dan
 RBAC, plugin, serta auto-update. Satu sesi per window adalah batas fase ini.
 
@@ -219,14 +257,18 @@ cargo test
 
 `cargo test` menjalankan test vault (lifecycle, crypto, storage, dan corruption), test inventory
 (Group, Host, Credential, known host, relasi, resolusi Host + Credential untuk koneksi, dan handling
-secret), test trust host key, serta test SSH. Semuanya memakai temporary directory dan parameter
+secret), test snippet (CRUD, validasi batas, tombstone, isi yang tidak diubah, dan pengiriman ke
+session), test trust host key, serta test SSH. Semuanya memakai temporary directory dan parameter
 Argon2id yang ringan, jadi tidak pernah menyentuh database atau app data pengguna.
 
 Test yang menyentuh Tauri command (`connect_ssh`, `start_saved_ssh`, `list_known_hosts`,
-`forget_known_host`) memakai mock runtime milik Tauri, sehingga nama command, nama argument, dan
-bentuk payload yang diterima frontend diuji lewat dispatch IPC yang sebenarnya — bukan lewat
-salinannya. Termasuk bahwa `start_saved_ssh` menolak payload yang mencoba membawa password, private
-key, passphrase, address, atau credential id.
+`forget_known_host`, `list_snippets`, `create_snippet`, `update_snippet`, `delete_snippet`,
+`run_snippet`) memakai mock runtime milik Tauri, sehingga nama command, nama argument, dan bentuk
+payload yang diterima frontend diuji lewat dispatch IPC yang sebenarnya — bukan lewat salinannya.
+Termasuk bahwa `start_saved_ssh` menolak payload yang mencoba membawa password, private key,
+passphrase, address, atau credential id, dan bahwa `run_snippet` hanya menerima `sessionId` dan
+`snippetId`: payload yang mencoba membawa `content`, `command`, atau field lain ditolak, bukan
+diabaikan.
 
 ### Live test terhadap server SSH sungguhan
 
@@ -235,8 +277,11 @@ penolakan host key, host key yang berubah, host key yang diingat setelah vault d
 server yang hanya menawarkan `ssh-rsa` (SHA-1) yang harus ditolak. Untuk Phase 1B2b, test yang sama
 membuka sesi lewat jalur saved Host (Credential password dan private key dari vault), mengulanginya
 tanpa prompt host key setelah vault dibuka ulang, serta membuktikan password salah dan host key yang
-berubah gagal tanpa mengulang secret di pesan error. Semuanya diabaikan secara default dan hanya
-berjalan bila diminta:
+berubah gagal tanpa mengulang secret di pesan error. Untuk Phase 1C, `live_snippet_runs_on_the_remote_shell`
+menyimpan snippet ke vault sementara, membuka session sungguhan, menyalurkan snippet lewat jalur input
+yang sama dengan aplikasi, dan membuktikan shell jarak jauh benar-benar menjalankannya — termasuk
+snippet dua baris — lalu session itu masih menerima input keyboard dan diputus dengan bersih.
+Semuanya diabaikan secara default dan hanya berjalan bila diminta:
 
 ```sh
 cd src-tauri
