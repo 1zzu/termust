@@ -1,0 +1,24 @@
+# sshd policy for the disposable test server. It replaces the package default so
+# the tests always meet the same server, and it is deliberately small.
+
+Port 22
+ListenAddress 0.0.0.0
+
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+
+# The only account that exists in the container, and the only one allowed in.
+AllowUsers tester
+PermitRootLogin no
+PermitEmptyPasswords no
+
+# Both credential types the app supports are enabled on purpose.
+PasswordAuthentication yes
+PubkeyAuthentication yes
+KbdInteractiveAuthentication no
+
+# No PAM: without it sshd checks /etc/shadow directly, which keeps the image
+# small and the behaviour the same on every machine running the tests.
+UsePAM no
+
+PrintMotd no

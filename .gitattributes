@@ -1,0 +1,4 @@
+# The checks run on Linux, macOS and Windows, and `cargo fmt --check` plus
+# `prettier --check` both expect LF. Keeping the working tree LF everywhere
+# avoids a Windows runner failing on line endings it never wrote.
+* text=auto eol=lf

@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Everything that is expected to work on all three platforms. Nothing here
+  # needs a secret, a signing identity or an installer: the Tauri step only
+  # compiles the application, so packaging problems cannot fail the build.
+  checks:
+    name: checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Only the system libraries Tauri itself needs to compile.
+      - name: Install Tauri dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.17'
+
+      # The runner already has a stable Rust, which is newer than the 1.90 the
+      # project requires; only rustfmt and clippy need adding.
+      - name: Add the Rust components the checks use
+        run: rustup component add rustfmt clippy
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Check types and components
+        run: npm run check
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build the frontend
+        run: npm run build
+
+      - name: Rust formatting
+        working-directory: src-tauri
+        run: cargo fmt --all --check
+
+      - name: Rust lints
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Compile the Tauri application
+        run: npm run tauri -- build --no-bundle
+
+  # The live SSH tests need Docker and a real server, so they only run on Linux
+  # and only after the checks above. The Docker daemon on the runner is enough;
+  # no secret and no external server is involved.
+  ssh-integration:
+    name: ssh integration (disposable OpenSSH)
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the disposable SSH integration tests
+        run: npm run test:ssh-integration

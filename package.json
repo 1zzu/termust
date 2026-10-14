@@ -13,6 +13,7 @@
 		"lint": "prettier --check . && eslint .",
 		"format": "prettier --write .",
 		"test": "vitest run",
+		"test:ssh-integration": "./scripts/test-ssh-integration.sh",
 		"tauri": "tauri"
 	},
 	"imports": {

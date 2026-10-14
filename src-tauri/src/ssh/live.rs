@@ -13,6 +13,10 @@
 //! takes its passphrase from `TERMUST_LIVE_PASSPHRASE`. Every secret comes from
 //! the environment, a key file is only ever read, and nothing here prints a
 //! secret. A test whose variables are missing reports why and does nothing.
+//!
+//! `scripts/test-ssh-integration.sh` sets all of that up for real: it starts
+//! disposable servers with Docker and runs these tests against them, including
+//! the one that needs a server offering only the legacy `ssh-rsa` signature.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -308,6 +312,49 @@ async fn live_changed_host_key_is_blocked_without_asking() {
     assert!(
         !status_reached(&log, "connected"),
         "a changed host key must never reach a shell: {log:?}"
+    );
+}
+
+/// A server that only offers the legacy `ssh-rsa` (SHA-1) signature must be
+/// refused instead of being talked into SHA-1. Point the variables at a server
+/// configured with `PubkeyAcceptedAlgorithms ssh-rsa` and at an RSA key.
+#[tokio::test]
+#[ignore = "needs a server that only accepts ssh-rsa; see the module comment"]
+async fn live_rsa_only_server_is_refused() {
+    let Some(server) = LiveServer::from_env() else {
+        eprintln!("skipping: set TERMUST_LIVE_HOST and TERMUST_LIVE_USER to run the live tests");
+        return;
+    };
+    let Some(private_key) = private_key_from_env() else {
+        eprintln!("skipping: set TERMUST_LIVE_PRIVATE_KEY_PATH or TERMUST_LIVE_PRIVATE_KEY");
+        return;
+    };
+
+    let mut session = RunningSession::start(
+        private_key_request(&server, private_key, None),
+        HashMap::new(),
+    );
+
+    // This is still the first connection to that host, so the host key is
+    // approved as usual; the refusal has to come from authentication.
+    assert!(
+        session
+            .saw(|events| host_key_prompt(events).is_some())
+            .await,
+        "no host key prompt arrived: {:?}",
+        session.log()
+    );
+    session.answer_host_key(true);
+
+    let outcome = session.shutdown().await;
+    let message = outcome.expect_err("a server offering only ssh-rsa must be refused");
+    assert!(message.contains("ssh-rsa"), "{message}");
+    assert!(message.contains("SHA-1"), "{message}");
+
+    let log = session.log();
+    assert!(
+        !status_reached(&log, "connected"),
+        "a server offering only ssh-rsa must never reach a shell: {log:?}"
     );
 }
 
