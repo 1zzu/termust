@@ -4,10 +4,14 @@
 //! commands it needs and keeps the session state alive between calls.
 
 mod ssh;
+// The vault is a self-contained core the app builds on; keeping it public lets
+// its API be used and tested directly, without going through the frontend.
+pub mod vault;
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use ssh::{ConnectRequest, SshState};
+use vault::{Vault, VaultState};
 
 #[tauri::command]
 fn connect_ssh(
@@ -52,12 +56,26 @@ async fn disconnect_ssh(state: State<'_, SshState>, session_id: String) -> Resul
 pub fn run() {
     let result = tauri::Builder::default()
         .manage(SshState::default())
+        .setup(|app| {
+            // The vault database lives in the app data directory the operating
+            // system defines for this app; the frontend never chooses a path.
+            let directory = app
+                .path()
+                .app_data_dir()
+                .map_err(|error| format!("Could not resolve the app data directory: {error}"))?;
+            app.manage(VaultState::new(Vault::new(directory.join(vault::DB_FILE))));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             connect_ssh,
             write_ssh,
             resize_ssh,
             respond_host_key,
-            disconnect_ssh
+            disconnect_ssh,
+            vault::vault_status,
+            vault::create_vault,
+            vault::unlock_vault,
+            vault::lock_vault
         ])
         .run(tauri::generate_context!());
 
@@ -88,7 +106,9 @@ mod tests {
     /// `connect_ssh` is missing on purpose: it takes a concrete `AppHandle`,
     /// which a mock runtime cannot hand to a command. Its only argument is the
     /// nested request, whose field names are covered by the serde test in
-    /// `ssh::tests`. Keep this list in step with `run`.
+    /// `ssh::tests`. The vault commands are missing for the same reason; their
+    /// behaviour is covered directly against `vault::Vault`. Keep this list in
+    /// step with `run`.
     fn mock_window() -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
         let app = mock_builder()
             .manage(SshState::default())

@@ -74,16 +74,6 @@ export function isConnected(status: ConnectionStatus): boolean {
 	return status === 'connected';
 }
 
-/**
- * Tauri rejects a command with whatever error it returned as a string. Anything
- * else reaching here is a bug rather than something the user can act on.
- */
-export function errorMessage(error: unknown): string {
-	if (typeof error === 'string' && error.trim().length > 0) {
-		return error;
-	}
-	if (error instanceof Error && error.message.trim().length > 0) {
-		return error.message;
-	}
-	return 'Something went wrong.';
-}
+// `errorMessage` is shared with the vault UI, so it lives in `errors.ts`.
+// Re-exported here so the SSH call sites keep their existing import.
+export { errorMessage } from './errors';

@@ -6,6 +6,7 @@
 	import '@xterm/xterm/css/xterm.css';
 
 	import { Alert, AlertDescription, AlertTitle } from '#lib/components/ui/alert';
+	import VaultPanel from '#lib/components/vault-panel.svelte';
 	import { Button } from '#lib/components/ui/button';
 	import { Card, CardContent, CardHeader, CardTitle } from '#lib/components/ui/card';
 	import {
@@ -255,6 +256,8 @@
 			<span aria-live="polite">{statusLabel(status)}</span>
 		</div>
 	</header>
+
+	<VaultPanel />
 
 	<Card>
 		<CardHeader>

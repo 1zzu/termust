@@ -31,3 +31,9 @@ tauri = { version = "2.12.3", features = [] }
 russh = { version = "0.64.1", default-features = false, features = ["ring", "flate2", "rsa"] }
 tokio = { version = "1.53.3", features = ["sync", "time", "net", "io-util", "macros", "rt-multi-thread"] }
 base64 = "0.23.1"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+argon2 = { version = "0.6.0", default-features = false }
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc"] }
+zeroize = "1.9.1"
+uuid = { version = "1.28.0", features = ["v4"] }
+getrandom = "0.4.3"
