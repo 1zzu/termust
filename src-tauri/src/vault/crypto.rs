@@ -172,6 +172,77 @@ pub fn decrypt_object(
     open(vault_key, nonce, ciphertext, &object_aad(id, kind))
 }
 
+/// The largest key-derivation parameters a file may name, in the same units as
+/// `KdfParams`.
+///
+/// A portable backup carries its own parameters, so a hostile or damaged file
+/// could otherwise ask for a derivation that allocates gigabytes or keeps a core
+/// busy for minutes. These bounds are a **resource-exhaustion guard, not a
+/// default**: production parameters are far below them, and they are checked
+/// before Argon2id is ever called, so a rejected file costs no derivation at
+/// all. The values leave room for a later format to ask for more than today's
+/// production cost without letting an untrusted file pick an unreasonable one.
+pub const KDF_LIMITS: KdfParams = KdfParams {
+    memory_cost: 256 * 1024, // 256 MiB
+    time_cost: 6,
+    parallelism: 8,
+};
+
+/// The cheapest parameters Argon2id itself accepts, so a file cannot ask for a
+/// key that is weaker than the primitive allows.
+const KDF_FLOOR: KdfParams = KdfParams {
+    memory_cost: 8,
+    time_cost: 1,
+    parallelism: 1,
+};
+
+/// Rejects parameters outside the range this build is willing to run.
+pub fn validate_kdf(params: KdfParams) -> Result<(), VaultError> {
+    let below = params.memory_cost < KDF_FLOOR.memory_cost
+        || params.time_cost < KDF_FLOOR.time_cost
+        || params.parallelism < KDF_FLOOR.parallelism;
+    let above = params.memory_cost > KDF_LIMITS.memory_cost
+        || params.time_cost > KDF_LIMITS.time_cost
+        || params.parallelism > KDF_LIMITS.parallelism;
+    if below || above {
+        return Err(VaultError::Kdf);
+    }
+    Ok(())
+}
+
+/// Encrypts a portable backup payload under a key derived from the backup
+/// password.
+///
+/// The nonce and the AAD come from the caller, because the backup file has to
+/// store the nonce beside the ciphertext and because the AAD *is* the backup
+/// format's identity: the backup module owns it, so this module needs to know
+/// nothing about backup versions. Different AAD cannot be opened by the other
+/// side, which is what keeps a backup payload from ever being read as a vault
+/// object or a wrapped Vault Key, and the other way around.
+pub fn seal_backup(
+    key: &SecretKey,
+    nonce: &[u8],
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, VaultError> {
+    seal(key, nonce, plaintext, aad)
+}
+
+/// Recovers a portable backup payload.
+///
+/// A wrong backup password, a flipped ciphertext byte, a damaged authentication
+/// tag and an AAD from another format version all fail here the same way, so the
+/// caller has one generic error to show and never a hint about which check
+/// failed.
+pub fn open_backup(
+    key: &SecretKey,
+    nonce: &[u8],
+    ciphertext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, VaultError> {
+    open(key, nonce, ciphertext, aad)
+}
+
 /// A fresh buffer of `len` random bytes.
 pub fn random_bytes(len: usize) -> Result<Vec<u8>, VaultError> {
     let mut bytes = vec![0u8; len];
@@ -406,5 +477,107 @@ mod tests {
         key.zeroize();
 
         assert!(key.as_bytes().iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn the_production_cost_and_the_boundary_are_accepted() {
+        assert!(
+            validate_kdf(PRODUCTION).is_ok(),
+            "the production cost must always be usable"
+        );
+        assert!(
+            validate_kdf(KDF_LIMITS).is_ok(),
+            "a parameter set exactly at the bound must be usable"
+        );
+        // The cheapest set Argon2id itself accepts.
+        assert!(validate_kdf(KDF_FLOOR).is_ok());
+    }
+
+    #[test]
+    fn a_parameter_one_step_over_the_bound_is_refused() {
+        for over in [
+            KdfParams {
+                memory_cost: KDF_LIMITS.memory_cost + 1,
+                ..KDF_LIMITS
+            },
+            KdfParams {
+                time_cost: KDF_LIMITS.time_cost + 1,
+                ..KDF_LIMITS
+            },
+            KdfParams {
+                parallelism: KDF_LIMITS.parallelism + 1,
+                ..KDF_LIMITS
+            },
+        ] {
+            assert!(validate_kdf(over).is_err(), "{over:?} was accepted");
+        }
+    }
+
+    #[test]
+    fn zero_and_below_the_floor_are_refused() {
+        for too_cheap in [
+            KdfParams {
+                memory_cost: 0,
+                time_cost: 0,
+                parallelism: 0,
+            },
+            KdfParams {
+                memory_cost: KDF_FLOOR.memory_cost - 1,
+                ..KDF_FLOOR
+            },
+            KdfParams {
+                time_cost: 0,
+                ..KDF_FLOOR
+            },
+            KdfParams {
+                parallelism: 0,
+                ..KDF_FLOOR
+            },
+        ] {
+            assert!(
+                validate_kdf(too_cheap).is_err(),
+                "{too_cheap:?} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_backup_payload_cannot_be_opened_with_another_aad() {
+        let key = SecretKey::from_bytes([42u8; KEY_LEN]);
+        let nonce = [3u8; NONCE_LEN];
+        let sealed = seal_backup(&key, &nonce, b"payload", b"termust:backup:v1:payload")
+            .expect("the payload was sealed");
+
+        assert!(
+            open_backup(&key, &nonce, &sealed, b"termust:backup:v1:payload").is_ok(),
+            "the same AAD must open the payload"
+        );
+        assert!(
+            open_backup(&key, &nonce, &sealed, b"termust:backup:v2:payload").is_err(),
+            "another format version opened the payload"
+        );
+        assert!(
+            open_backup(&key, &nonce, &sealed, b"termust:vault-object:payload").is_err(),
+            "another domain opened the payload"
+        );
+    }
+
+    #[test]
+    fn backup_ciphertext_and_object_ciphertext_are_not_interchangeable() {
+        let key = SecretKey::from_bytes([42u8; KEY_LEN]);
+        let nonce = [5u8; NONCE_LEN];
+        let backup_aad = b"termust:backup:v1:payload";
+
+        let sealed = seal_backup(&key, &nonce, b"payload", backup_aad).unwrap();
+        assert!(
+            decrypt_object(&key, "object-id", "note", &sealed, &nonce).is_err(),
+            "a backup payload was accepted as a vault object"
+        );
+
+        let object = encrypt_object(&key, "object-id", "note", b"payload").unwrap();
+        assert!(
+            open_backup(&key, &object.nonce, &object.ciphertext, backup_aad).is_err(),
+            "a vault object was accepted as a backup payload"
+        );
     }
 }

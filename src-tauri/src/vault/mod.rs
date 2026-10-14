@@ -19,7 +19,7 @@
 //! This file holds the vault state, the object API the tests use directly, and
 //! the four Tauri commands the frontend can call.
 
-mod crypto;
+pub(crate) mod crypto;
 mod model;
 mod storage;
 
@@ -38,13 +38,17 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use crypto::{KdfParams, SecretKey};
-use model::{CRYPTO_VERSION, Envelope, KDF_ARGON2ID, SCHEMA_VERSION, StoredObject, VaultMeta};
+use model::{Envelope, KDF_ARGON2ID, SCHEMA_VERSION, StoredObject, VaultMeta};
 
 // `VaultObject` is what the object API answers with, so callers outside this
 // module need to be able to name it. `now` is also how a domain record builds
 // its timestamps, so both are part of the vault's public API.
 pub use model::VaultObject;
 pub use storage::{DB_FILE, now};
+
+// The crypto format version travels with every stored object, so code that reads
+// stored data outside this module has to be able to name it.
+pub(crate) use model::CRYPTO_VERSION;
 
 /// What the frontend is told about the vault. The windows the app can be in are
 /// exactly these three.
@@ -119,6 +123,25 @@ impl fmt::Display for VaultError {
 }
 
 impl std::error::Error for VaultError {}
+
+/// One object exactly as a portable backup needs it: identity, timestamps,
+/// tombstones, and the decrypted domain payload.
+///
+/// This is deliberately not [`VaultObject`]: a backup is a copy of the whole
+/// table, tombstones included, and it carries the timestamps as they were stored
+/// rather than the moment they were read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SnapshotObject {
+    pub id: String,
+    pub kind: String,
+    /// The decrypted record. It wipes its bytes when it is dropped, because a
+    /// credential's payload holds its secret.
+    pub payload: Zeroizing<String>,
+    pub crypto_version: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub deleted_at: Option<i64>,
+}
 
 /// One vault database, plus the Vault Key while it is unlocked.
 pub struct Vault {
@@ -333,6 +356,47 @@ impl Vault {
             .collect()
     }
 
+    /// Every object, tombstones included, decrypted and handed over with its
+    /// identity and timestamps.
+    ///
+    /// This is what a portable backup is made of, so it reads the whole table
+    /// through one connection: the result is one consistent view, and it fails on
+    /// the first object this build cannot decrypt rather than quietly dropping
+    /// it.
+    pub(crate) fn snapshot_objects(&self) -> Result<Vec<SnapshotObject>, VaultError> {
+        let unlocked = self.unlocked()?;
+        let connection = self.connection()?;
+        storage::list_all_objects(&connection)?
+            .iter()
+            .map(|object| decrypt_snapshot_object(&unlocked.key, object))
+            .collect()
+    }
+
+    /// Replaces every object in the vault with the given snapshot, in one
+    /// transaction.
+    ///
+    /// The snapshot is encrypted under *this* vault's key as it is written, so a
+    /// restored object is ordinary local data from the moment it lands. Nothing
+    /// outside `vault_objects` is touched: the vault's identity, its Vault Key,
+    /// its master password and its key-derivation parameters are all unchanged.
+    pub(crate) fn replace_objects(&self, objects: &[SnapshotObject]) -> Result<(), VaultError> {
+        let unlocked = self.unlocked()?;
+        let mut connection = self.connection()?;
+        let stored = objects
+            .iter()
+            .map(|object| encrypt_snapshot_object(&unlocked.key, object))
+            .collect::<Result<Vec<StoredObject>, VaultError>>()?;
+        storage::replace_objects(&mut connection, &stored)
+    }
+
+    /// Whether the Vault Key is in memory.
+    ///
+    /// A command that never reads an object still has to refuse a locked vault,
+    /// and this is the one place that answers that question without opening it.
+    pub(crate) fn is_unlocked(&self) -> bool {
+        self.unlocked.is_some()
+    }
+
     fn unlocked(&self) -> Result<&Unlocked, VaultError> {
         self.unlocked.as_ref().ok_or(VaultError::Locked)
     }
@@ -369,6 +433,71 @@ fn open_with(meta: &VaultMeta, password: &str) -> Result<Unlocked, VaultError> {
     Ok(Unlocked { key })
 }
 
+/// Decrypts one stored object into the snapshot shape, refusing a crypto version
+/// or an envelope version this build does not write.
+fn decrypt_snapshot_object(
+    key: &SecretKey,
+    object: &StoredObject,
+) -> Result<SnapshotObject, VaultError> {
+    if object.crypto_version > CRYPTO_VERSION {
+        return Err(VaultError::UnsupportedVersion {
+            found: object.crypto_version,
+            supported: CRYPTO_VERSION,
+        });
+    }
+
+    // The decrypted bytes hold the record's plaintext, secrets included, so
+    // they live in a buffer that wipes itself instead of a plain `Vec`.
+    let plaintext = Zeroizing::new(
+        crypto::decrypt_object(
+            key,
+            &object.id,
+            &object.kind,
+            &object.encrypted_payload,
+            &object.nonce,
+        )
+        .map_err(|_| VaultError::Corrupt("object payload"))?,
+    );
+
+    let envelope = Envelope::from_bytes(&plaintext).map_err(|_| VaultError::Corrupt("envelope"))?;
+    if envelope.schema_version != model::ENVELOPE_VERSION {
+        return Err(VaultError::UnsupportedVersion {
+            found: i64::from(envelope.schema_version),
+            supported: i64::from(model::ENVELOPE_VERSION),
+        });
+    }
+
+    Ok(SnapshotObject {
+        id: object.id.clone(),
+        kind: object.kind.clone(),
+        payload: Zeroizing::new(envelope.payload),
+        crypto_version: object.crypto_version,
+        created_at: object.created_at,
+        updated_at: object.updated_at,
+        deleted_at: object.deleted_at,
+    })
+}
+
+/// Encrypts one snapshot object with this vault's key and a fresh nonce.
+fn encrypt_snapshot_object(
+    key: &SecretKey,
+    object: &SnapshotObject,
+) -> Result<StoredObject, VaultError> {
+    let plaintext = Envelope::new(&object.kind, &object.payload).to_bytes()?;
+    let encrypted = crypto::encrypt_object(key, &object.id, &object.kind, &plaintext)?;
+
+    Ok(StoredObject {
+        id: object.id.clone(),
+        kind: object.kind.clone(),
+        encrypted_payload: encrypted.ciphertext,
+        nonce: encrypted.nonce,
+        crypto_version: CRYPTO_VERSION,
+        created_at: object.created_at,
+        updated_at: object.updated_at,
+        deleted_at: object.deleted_at,
+    })
+}
+
 /// Rejects a vault written by a newer build, or with a different KDF.
 fn check_supported(meta: &VaultMeta) -> Result<(), VaultError> {
     if meta.schema_version > SCHEMA_VERSION {
@@ -397,14 +526,18 @@ fn decrypt_object(key: &SecretKey, object: &StoredObject) -> Result<VaultObject,
         });
     }
 
-    let plaintext = crypto::decrypt_object(
-        key,
-        &object.id,
-        &object.kind,
-        &object.encrypted_payload,
-        &object.nonce,
-    )
-    .map_err(|_| VaultError::Corrupt("object payload"))?;
+    // The decrypted bytes hold the record's plaintext, secrets included, so
+    // they live in a buffer that wipes itself instead of a plain `Vec`.
+    let plaintext = Zeroizing::new(
+        crypto::decrypt_object(
+            key,
+            &object.id,
+            &object.kind,
+            &object.encrypted_payload,
+            &object.nonce,
+        )
+        .map_err(|_| VaultError::Corrupt("object payload"))?,
+    );
 
     let envelope = Envelope::from_bytes(&plaintext).map_err(|_| VaultError::Corrupt("envelope"))?;
 

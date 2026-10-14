@@ -17,7 +17,8 @@ use super::model::{
     Credential, CredentialSecret, CredentialSummary, Group, Host, HostInput, KIND_CREDENTIAL,
     KIND_GROUP, KIND_HOST, KIND_KNOWN_HOST, KnownHost, KnownKey, MAX_ADDRESS_LEN,
     MAX_ALGORITHM_LEN, MAX_FINGERPRINT_LEN, MAX_LABEL_LEN, MAX_NAME_LEN, MAX_USERNAME_LEN,
-    PAYLOAD_VERSION, optional_id, optional_secret, required, secret, valid_port,
+    PAYLOAD_VERSION, check_required, check_secret, optional_id, optional_secret, required, secret,
+    valid_port,
 };
 
 // --- shared plumbing ------------------------------------------------------
@@ -42,9 +43,17 @@ fn decode<T: DeserializeOwned>(
     if object.kind != kind {
         return Err(InventoryError::WrongKind { expected: kind });
     }
+    from_payload(&object.payload)
+}
 
+/// Parses one payload, checking its version before it is decoded into a record.
+///
+/// A payload with a version this build does not know is refused here rather than
+/// half-read, which is what lets a portable backup fail closed instead of
+/// silently losing an object it does not understand.
+fn from_payload<T: DeserializeOwned>(payload: &str) -> Result<T, InventoryError> {
     let value: serde_json::Value =
-        serde_json::from_str(&object.payload).map_err(|_| InventoryError::Corrupt)?;
+        serde_json::from_str(payload).map_err(|_| InventoryError::Corrupt)?;
     let version = value
         .get("version")
         .and_then(serde_json::Value::as_u64)
@@ -57,6 +66,137 @@ fn decode<T: DeserializeOwned>(
     }
 
     serde_json::from_value(value).map_err(|_| InventoryError::Corrupt)
+}
+
+/// One decoded inventory record.
+///
+/// The portable backup walks a snapshot and needs to look *inside* a record — to
+/// check its id and the ids it points at — so it needs the record, not just the
+/// answer "this parsed".
+pub(crate) enum Record {
+    Group(Group),
+    Host(Host),
+    Credential(Credential),
+    KnownHost(KnownHost),
+}
+
+/// Decodes one domain payload from its kind and its plaintext payload, using the
+/// same checks a command reads with.
+///
+/// This is the single place that says what a group, a host, a credential and a
+/// known host look like inside the ciphertext, so a backup written here can only
+/// contain records this build understands, and a backup read here can only
+/// contain records it would read anyway.
+pub(crate) fn decode_record(kind: &str, payload: &str) -> Result<Record, InventoryError> {
+    match kind {
+        KIND_GROUP => from_payload(payload).map(Record::Group),
+        KIND_HOST => from_payload(payload).map(Record::Host),
+        KIND_CREDENTIAL => from_payload(payload).map(Record::Credential),
+        KIND_KNOWN_HOST => from_payload(payload).map(Record::KnownHost),
+        _ => Err(InventoryError::UnknownKind),
+    }
+}
+
+/// Re-checks one decoded record against the same field rules the commands apply
+/// to the input they are given.
+///
+/// A command validates what the user typed and then builds the record; a record
+/// read out of a backup was built elsewhere, so this checks the built shape
+/// instead. Both paths end at the same rules: the length limits, the non-empty
+/// fields, the usable port, the secret limits and the relation ids all come from
+/// the same helpers in `model.rs`. A value the commands would have trimmed has
+/// to already be trimmed here, because a restore writes records exactly as it
+/// read them and never silently rewrites user data.
+pub(crate) fn check_record(record: &Record) -> Result<(), InventoryError> {
+    match record {
+        Record::Group(group) => {
+            unchanged(
+                &group.name,
+                check_required(&group.name, "Group name", MAX_NAME_LEN)?,
+            )?;
+        }
+        Record::Host(host) => {
+            unchanged(
+                &host.label,
+                check_required(&host.label, "Label", MAX_LABEL_LEN)?,
+            )?;
+            unchanged(
+                &host.address,
+                check_required(&host.address, "Address", MAX_ADDRESS_LEN)?,
+            )?;
+            unchanged(
+                &host.username,
+                check_required(&host.username, "Username", MAX_USERNAME_LEN)?,
+            )?;
+            valid_port(i64::from(host.port))?;
+            // Absent and empty both mean "no relation" in the commands, so a
+            // stored relation has to be the same form they write.
+            unchanged_option(&host.group_id, optional_id(&host.group_id))?;
+            unchanged_option(&host.credential_id, optional_id(&host.credential_id))?;
+        }
+        Record::Credential(credential) => {
+            unchanged(
+                &credential.name,
+                check_required(&credential.name, "Credential name", MAX_NAME_LEN)?,
+            )?;
+            match &credential.secret {
+                CredentialSecret::Password { password } => check_secret(password, "Password")?,
+                CredentialSecret::PrivateKey {
+                    private_key,
+                    passphrase,
+                } => {
+                    check_secret(private_key, "Private key")?;
+                    // The commands store an empty passphrase as none, so a record
+                    // that carries an empty one was not written by this build.
+                    if let Some(passphrase) = passphrase {
+                        check_secret(passphrase, "Passphrase")?;
+                    }
+                }
+            }
+        }
+        Record::KnownHost(known) => {
+            unchanged(
+                &known.host_key_id,
+                check_required(&known.host_key_id, "Host identity", MAX_ADDRESS_LEN)?,
+            )?;
+            unchanged(
+                &known.key_algorithm,
+                check_required(&known.key_algorithm, "Key algorithm", MAX_ALGORITHM_LEN)?,
+            )?;
+            unchanged(
+                &known.fingerprint_sha256,
+                check_required(
+                    &known.fingerprint_sha256,
+                    "Fingerprint",
+                    MAX_FINGERPRINT_LEN,
+                )?,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// A text field has to be exactly what a command would have stored for it.
+fn unchanged(value: &str, checked: &str) -> Result<(), InventoryError> {
+    if checked == value {
+        return Ok(());
+    }
+    Err(InventoryError::Invalid(
+        "A stored field is not in the form this build writes.".to_string(),
+    ))
+}
+
+/// The same, for an optional relation id.
+fn unchanged_option(
+    stored: &Option<String>,
+    checked: Option<String>,
+) -> Result<(), InventoryError> {
+    if checked.as_deref() == stored.as_deref() {
+        return Ok(());
+    }
+    Err(InventoryError::Invalid(
+        "A stored field is not in the form this build writes.".to_string(),
+    ))
 }
 
 fn load_all<T: DeserializeOwned>(

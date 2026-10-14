@@ -42,12 +42,20 @@ pub(crate) use service::{credential_for_host, find_known_host, remember_known_ho
 /// already own these names.
 pub(crate) use service::{create_host as create_host_record, list_hosts as list_host_records};
 
+/// What a portable backup needs from here: the one function that decodes a
+/// record from its kind and its plaintext payload, and the one that re-checks a
+/// decoded record against the same rules the commands apply. A backup is a copy
+/// of the vault, so it has to read, check and write the very same records the
+/// commands do.
+pub(crate) use service::{Record, check_record, decode_record};
+
 /// The service calls a test needs to set up a record the way the commands would.
 /// Test-only, and renamed for the same reason.
 #[cfg(test)]
 pub(crate) use service::{
     create_group as create_group_record, create_password_credential as create_password_record,
-    create_private_key_credential as create_private_key_record, update_host as update_host_record,
+    create_private_key_credential as create_private_key_record, list_groups as list_group_records,
+    list_known_hosts as list_known_host_records, update_host as update_host_record,
 };
 
 /// Everything an inventory operation can fail with.
@@ -77,6 +85,11 @@ pub enum InventoryError {
     UnsupportedPayloadVersion { found: u64, supported: u8 },
     /// An object was read as a kind it is not.
     WrongKind { expected: &'static str },
+    /// An object was found of a kind this build does not write at all.
+    ///
+    /// The kind itself is deliberately absent: it comes from stored or imported
+    /// data, and no message here repeats untrusted text.
+    UnknownKind,
     /// The encrypted object could not be decrypted or parsed.
     Corrupt,
     /// Guards a failure that cannot happen for a record this module wrote.
@@ -114,6 +127,9 @@ impl fmt::Display for InventoryError {
             Self::WrongKind { expected } => {
                 write!(formatter, "That object is not a {expected}.")
             }
+            Self::UnknownKind => formatter.write_str(
+                "That object is of a kind this build does not know how to read.",
+            ),
             Self::Corrupt => {
                 formatter.write_str("A stored object is corrupted and could not be read.")
             }

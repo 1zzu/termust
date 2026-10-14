@@ -6,6 +6,7 @@
 //! format move on their own.
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use super::VaultError;
 
@@ -86,8 +87,16 @@ impl Envelope {
         }
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>, VaultError> {
-        serde_json::to_vec(self).map_err(|_| VaultError::Corrupt("object envelope"))
+    /// Serialises the envelope to the bytes that are encrypted.
+    ///
+    /// The result wipes itself: the envelope holds the record's plaintext,
+    /// which for a credential is its secret. It is a `Zeroizing` buffer rather
+    /// than a copy of the payload so the plaintext lives in exactly one place
+    /// between being serialised and being encrypted.
+    pub fn to_bytes(&self) -> Result<Zeroizing<Vec<u8>>, VaultError> {
+        serde_json::to_vec(self)
+            .map(Zeroizing::new)
+            .map_err(|_| VaultError::Corrupt("object envelope"))
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, VaultError> {

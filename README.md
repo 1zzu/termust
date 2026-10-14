@@ -89,6 +89,11 @@ packaging, bukan kegagalan kode.
 - **Import Host dari basic OpenSSH config (Phase 1D).** Subset kecil yang jujur: `Host`, `HostName`,
   `User`, dan `Port` dari file config atau teks yang ditempel, selalu lewat preview dan konfirmasi,
   tanpa membaca key atau file lain. Lihat bagian _Import OpenSSH config_.
+- **Encrypted backup & restore (Phase 1E).** Seluruh domain data vault ditulis ke satu file
+  `.termust-backup` yang terenkripsi dengan password khusus backup, dapat diperiksa tanpa menulis apa
+  pun, dan dapat dipulihkan secara atomik ke vault mana pun — termasuk vault dengan master password
+  berbeda, karena setiap record dienkripsi ulang dengan Vault Key vault tujuan. Lihat bagian
+  _Backup & Restore_.
 - **Quick Connect.** Form koneksi langsung tanpa menyimpan host: host atau IP, port (default 22),
   username, pilihan autentikasi, dan kredensial sesuai pilihan. Form ini tetap terpisah dan tidak
   memakai saved Host maupun saved Credential.
@@ -258,6 +263,55 @@ Subset sintaks, aturan duplicate, batas keamanan, dan langkah pemakaiannya ada d
 [`docs/openssh-import-v1.md`](docs/openssh-import-v1.md). Model Host tidak berubah sama sekali:
 lihat [`docs/local-data-model-v1.md`](docs/local-data-model-v1.md).
 
+## Backup & Restore (Phase 1E)
+
+Seluruh isi vault dapat ditulis ke satu file `.termust-backup` yang terenkripsi dengan **password
+khusus backup**, lalu dipulihkan lagi. File itu portable: backup yang dibuat dari vault dengan master
+password A dapat dipulihkan ke vault dengan master password C, karena setiap record dienkripsi ulang
+memakai Vault Key vault tujuan.
+
+- **Export.** Dialog meminta password backup dua kali (minimum 12 karakter, tidak boleh sama dengan
+  master password vault secara diam-diam — pengguna boleh memilih yang sama, aplikasi tidak tahu),
+  lalu membuka native save dialog. File ditulis secara atomik: temporary file di direktori tujuan yang
+  sama, `sync`, lalu dipublikasikan dengan replace move (Unix `rename`, Windows
+  `MoveFileExW`/`MOVEFILE_REPLACE_EXISTING`), dengan mode `0600` di Unix. Tanpa persetujuan overwrite,
+  publikasinya adalah no-clobber move yang diputuskan filesystem — bukan check-then-rename yang bisa
+  kalah race. File temporary dibersihkan lewat RAII bila gagal. Backup hanya membaca vault, jadi export
+  boleh dilakukan saat session SSH aktif, dan tidak ada object atau timestamp yang berubah.
+- **Inspect.** `inspect_encrypted_backup` membuka file **tanpa menulis apa pun** dan hanya
+  mengembalikan ringkasan: `createdAt`, `sourceAppVersion`, jumlah object, jumlah aktif, jumlah
+  tombstone, `countByKind`, dan `fileDigest` (SHA-256 file itu, bukan rahasia). Tidak ada secret,
+  nama, address, atau payload utuh yang sampai ke frontend: preview menunjukkan berapa banyak
+  datanya, bukan isinya. Digest itu dipakai restore untuk memastikan file yang dipulihkan memang file
+  yang baru saja dibaca.
+- **Restore.** Hanya mode `replace`. Frontend menjelaskan bahwa seluruh isi vault akan diganti,
+  meminta pengguna mengetik `RESTORE`, dan mengirim `mode` + `confirmation` + `fileDigest` ke backend
+  — yang memeriksanya sendiri, bukan hanya mengandalkan tombol yang disabled. Restore ditolak bila
+  ada session SSH aktif atau connecting, dan aplikasi tidak pernah memutus session itu sendiri.
+  Pemeriksaan session itu dan penguncian terhadap session baru terjadi dalam satu langkah atomik:
+  selama restore berjalan, `connect_ssh`/`start_saved_ssh` ditolak. Guard itu dimiliki oleh pekerjaan
+  blocking restore — bukan oleh future command — sehingga command yang dibatalkan tidak membuka jalan
+  untuk session baru selama restore masih menulis ke vault, dan guard-nya dilepas lewat RAII pada
+  sukses, gagal, maupun panic.
+- **Atomik.** Validasi seluruh snapshot terjadi sebelum satu baris pun diubah, lalu satu transaksi
+  SQLite menghapus seluruh row lama dan menulis seluruh snapshot. Restore yang gagal tidak mengubah
+  vault sama sekali, dan `vault_meta` tidak pernah disentuh: master password, Vault Key, dan parameter
+  Argon2 vault tujuan tetap dipakai setelah restore.
+- **Portable.** Backup tidak memuat ciphertext vault sumber, wrapped Vault Key, atau metadata vault —
+  hanya record domain yang dienkripsi ulang saat restore. Karena itu master password vault sumber dan
+  password backup tidak dapat membuka vault tujuan.
+- **Tombstone.** Object yang sudah dihapus ikut tersimpan sebagai tombstone dan tetap terhapus setelah
+  restore; restore mengganti seluruh isi vault, jadi record yang dibuat setelah backup juga hilang.
+- **Fail closed.** Object dengan kind yang tidak dikenal, payload version yang tidak didukung, atau
+  crypto version yang lebih baru membuat export gagal seluruhnya, bukan menghasilkan backup yang
+  kehilangan data. Parameter KDF dari file dibatasi sebelum Argon2id dijalankan, dan password salah
+  atau file rusak menghasilkan satu pesan generik yang sama.
+
+Detail format, envelope, AAD, validasi snapshot, dan penanganan file ada di
+[`docs/backup-format-v1.md`](docs/backup-format-v1.md). Backup password tidak dapat dipulihkan: file
+itu tidak akan bisa dibuka lagi kalau passwordnya hilang, dan backup bukan sync — restore mengganti,
+bukan menggabungkan.
+
 ## Yang sengaja belum dibuat
 
 Multi-tab atau multi-sesi terminal, split pane, reconnect otomatis, session restore, auto-run
@@ -266,7 +320,9 @@ lengkap (`Match`, `Include`, wildcard, `Host *` default, multiple alias per bloc
 `IdentityFile` atau private key dari config, import `known_hosts` OpenSSH, wildcard host, jump host,
 menulis atau meng-export config OpenSSH, SFTP, port forwarding, tags, notes,
 search, snippet variables, snippet tags, snippet folders, snippet history, snippet sharing atau sync,
-backup/export/import, auto-lock timer, keychain/biometric unlock, sinkronisasi,
+cloud backup, backup otomatis atau terjadwal, incremental backup, merge restore, conflict resolution,
+per-object restore, unencrypted export, dan export ke OpenSSH config,
+auto-lock timer, keychain/biometric unlock, recovery key, sinkronisasi,
 enkripsi E2EE lintas perangkat, akun, backend Axum/self-hosted, web SSH relay, mobile UI, tim dan
 RBAC, plugin, serta auto-update. Satu sesi per window adalah batas fase ini.
 
@@ -290,7 +346,9 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` menjalankan test vault (lifecycle, crypto, storage, dan corruption), test inventory
+`cargo test` menjalankan test vault (lifecycle, crypto, storage, dan corruption), test backup
+(format, envelope, penolakan file rusak, snapshot validation, atomic restore, rollback penuh, dan
+restore ke master password berbeda), test inventory
 (Group, Host, Credential, known host, relasi, resolusi Host + Credential untuk koneksi, dan handling
 secret), test snippet (CRUD, validasi batas, tombstone, isi yang tidak diubah, dan pengiriman ke
 session), test trust host key, serta test SSH. Semuanya memakai temporary directory dan parameter
@@ -298,7 +356,8 @@ Argon2id yang ringan, jadi tidak pernah menyentuh database atau app data penggun
 
 Test yang menyentuh Tauri command (`connect_ssh`, `start_saved_ssh`, `list_known_hosts`,
 `forget_known_host`, `list_snippets`, `create_snippet`, `update_snippet`, `delete_snippet`,
-`run_snippet`, `preview_openssh_config`, `import_openssh_hosts`) memakai mock runtime milik Tauri,
+`run_snippet`, `preview_openssh_config`, `import_openssh_hosts`, `export_encrypted_backup`,
+`inspect_encrypted_backup`, `restore_encrypted_backup`) memakai mock runtime milik Tauri,
 sehingga nama command, nama argument, dan bentuk payload yang diterima frontend diuji lewat dispatch
 IPC yang sebenarnya — bukan lewat salinannya.
 Termasuk bahwa `start_saved_ssh` menolak payload yang mencoba membawa password, private key,
@@ -320,7 +379,13 @@ snippet dua baris — lalu session itu masih menerima input keyboard dan diputus
 Phase 1D, `live_imported_host_connects_after_a_credential_is_linked` mengimpor config yang menunjuk
 server itu, membuktikan Host hasil import belum punya Credential, membuat Credential lewat service
 normal, menautkannya ke Host tersebut, lalu membuka shell dan menjalankan command marker lewat jalur
-saved Host yang sama seperti Host biasa.
+saved Host yang sama seperti Host biasa. Untuk Phase 1E,
+`live_backup_round_trip_restores_a_host_a_known_host_and_a_snippet` membuat vault sumber (Group,
+Credential, Host, Known host hasil approval, Snippet), mengekspor backup sambil session pertama masih
+terbuka, membuktikan restore **ditolak** selama session itu hidup, memutusnya, memulihkan backup ke
+vault kedua dengan master password berbeda, memastikan vault itu tetap hanya terbuka dengan password
+miliknya, lalu membuka session lewat Host hasil restore tanpa prompt host key dan menjalankan Snippet
+hasil restore di shell sungguhan.
 Semuanya diabaikan secara default dan hanya berjalan bila diminta:
 
 ```sh
@@ -407,5 +472,11 @@ nyata terhadap server yang dikonfigurasi hanya menerima `ssh-rsa`.
   sehingga jalankan `npm run prepare` lebih dulu bila direktori virtual itu belum ada.
 - **Backend `ring`.** `russh` dikonfigurasi dengan fitur `ring` supaya build tidak butuh
   `cmake`/NASM.
+- **Native dialog backup.** Phase 1E memakai plugin resmi `tauri-plugin-dialog` (Rust) dan
+  `@tauri-apps/plugin-dialog` (frontend) hanya untuk satu hal: memilih lokasi file backup. Plugin itu
+  mengembalikan path ke frontend dan tidak pernah membaca atau menulis file sendiri, jadi tidak ada
+  plugin filesystem yang dipasang dan scope-nya minimum: `dialog:allow-open` dan `dialog:allow-save`
+  saja (lihat `src-tauri/capabilities/default.json`). Penulisan file, validasi path, dan batas
+  ukurannya tetap di backend.
 - **CSP.** xterm.js menyuntikkan `<style>` saat runtime, jadi `style-src` memuat
   `'unsafe-inline'`. Aman untuk aset lokal yang dimuat dari disk.

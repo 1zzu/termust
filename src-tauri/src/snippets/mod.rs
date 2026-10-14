@@ -36,6 +36,13 @@ pub(crate) use model::{RunSnippetRequest, Snippet, SnippetInput};
 #[cfg(test)]
 pub(crate) use service::{create_snippet as create_snippet_record, get_snippet};
 
+/// What a portable backup needs from here: the kind this build writes, the record
+/// itself — a backup has to look inside a snippet to check its fields — the one
+/// function that decodes a snippet payload, and the one that re-checks a decoded
+/// snippet against the same rules a command applies.
+pub(crate) use model::KIND_SNIPPET;
+pub(crate) use service::{check_snippet, decode_record as decode_snippet};
+
 /// Everything a snippet operation can fail with.
 ///
 /// The variants are for this code's own use; the `Display` text is what the

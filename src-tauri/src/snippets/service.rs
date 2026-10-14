@@ -10,7 +10,9 @@
 use crate::vault::{Vault, VaultError, VaultObject, new_id, now};
 
 use super::SnippetError;
-use super::model::{KIND_SNIPPET, PAYLOAD_VERSION, Snippet, SnippetInput, content, name};
+use super::model::{
+    KIND_SNIPPET, PAYLOAD_VERSION, Snippet, SnippetInput, check_content, check_name, content, name,
+};
 
 /// One snippet, read by id. An unknown id and a deleted one mean the same thing
 /// to a caller: there is nothing left to read.
@@ -102,9 +104,17 @@ fn decode(object: &VaultObject) -> Result<Snippet, SnippetError> {
             expected: KIND_SNIPPET,
         });
     }
+    decode_payload(&object.payload)
+}
 
+/// Parses one payload, checking its version before it is decoded into a record.
+///
+/// A payload with a version this build does not know is refused here rather than
+/// half-read, which is what lets a portable backup fail closed instead of
+/// silently losing an object it does not understand.
+fn decode_payload(payload: &str) -> Result<Snippet, SnippetError> {
     let value: serde_json::Value =
-        serde_json::from_str(&object.payload).map_err(|_| SnippetError::Corrupt)?;
+        serde_json::from_str(payload).map_err(|_| SnippetError::Corrupt)?;
     let version = value
         .get("version")
         .and_then(serde_json::Value::as_u64)
@@ -117,6 +127,33 @@ fn decode(object: &VaultObject) -> Result<Snippet, SnippetError> {
     }
 
     serde_json::from_value(value).map_err(|_| SnippetError::Corrupt)
+}
+
+/// Decodes one snippet from its plaintext payload, using the same checks a
+/// command reads with.
+///
+/// The portable backup calls this, so a file can only ever hold the snippets this
+/// build would read back.
+pub(crate) fn decode_record(payload: &str) -> Result<Snippet, SnippetError> {
+    decode_payload(payload)
+}
+
+/// Re-checks one decoded snippet against the same field rules `create_snippet`
+/// and `update_snippet` apply to their input.
+///
+/// The rules themselves live in `model.rs` and are the very ones the commands
+/// call; this only adds the one thing a decoded record can break that an input
+/// cannot: a value the commands would have trimmed has to already be trimmed,
+/// because a restore writes records exactly as it read them. The content is
+/// never trimmed, so its rule is the whole check, NUL bytes and the 64 KiB limit
+/// included.
+pub(crate) fn check_snippet(snippet: &Snippet) -> Result<(), SnippetError> {
+    if check_name(&snippet.name)? != snippet.name
+        || check_content(&snippet.content)? != snippet.content
+    {
+        return Err(SnippetError::Corrupt);
+    }
+    Ok(())
 }
 
 /// Serialising a record made of strings and numbers cannot fail in practice, so

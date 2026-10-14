@@ -39,3 +39,15 @@ chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["
 zeroize = { version = "1.9.1", features = ["serde"] }
 uuid = { version = "1.28.0", features = ["v4"] }
 getrandom = "0.4.3"
+# The official Tauri v2 dialog plugin: the native open/save dialog for choosing
+# a backup file. It only returns a path to the frontend; the backend does the
+# file work. No filesystem plugin is installed, so the webview cannot read or
+# write anything on its own.
+tauri-plugin-dialog = "2"
+# Publishing a backup file as a whole file or not at all: `NamedTempFile` does
+# the temporary-file lifecycle, and both `persist` (replace) and
+# `persist_noclobber` (never replace) use the atomic move each platform really
+# has, including the Windows case where `std::fs::rename` refuses to replace.
+tempfile = "3"
+# The digest that binds a preview to the file a restore really reads.
+sha2 = "0.10"

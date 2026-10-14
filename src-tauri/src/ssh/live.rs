@@ -37,9 +37,14 @@ use super::{
     AuthMethod, COMMAND_QUEUE, ConnectRequest, EVENT_DATA, EVENT_ERROR, EVENT_HOST_KEY,
     EVENT_STATUS, Notifier, SshState, TEST_TASK_TIMEOUT,
 };
+use crate::backup::model::{
+    ExportRequest, InspectRequest, REPLACE_CONFIRMATION, RESTORE_MODE_REPLACE, RestoreRequest,
+};
+use crate::backup::{export, inspect, restore};
 use crate::inventory::{
-    CredentialSecret, HostInput, KnownKey, create_host_record, create_password_record,
-    create_private_key_record, remember_known_host, update_host_record,
+    CredentialSecret, HostInput, KnownKey, create_group_record, create_host_record,
+    create_password_record, create_private_key_record, credential_for_host,
+    list_known_host_records, remember_known_host, update_host_record,
 };
 use crate::openssh::model::EntryStatus;
 use crate::openssh::{import, preview};
@@ -583,14 +588,15 @@ fn forwarding_session(session_id: &str, target: mpsc::Sender<Command>) -> SshSta
             }
         }
     });
-    ssh.lock().insert(
-        session_id.to_string(),
+    ssh.register(
+        session_id,
         super::Session {
             commands,
             host_key_decision: None,
             task: None,
         },
-    );
+    )
+    .expect("no restore is in progress");
     ssh
 }
 
@@ -1115,6 +1121,331 @@ async fn live_imported_host_connects_after_a_credential_is_linked() {
     let outcome = session.shutdown().await;
     assert!(outcome.is_ok(), "the session failed: {outcome:?}");
     assert_no_error_event(log);
+}
+
+// --- a whole vault, through a backup --------------------------------------
+
+/// The three passwords the backup round trip uses: the source vault's master
+/// password, the password of the backup file itself, and the destination vault's
+/// master password. All three are different on purpose.
+const LIVE_SOURCE_MASTER: &str = "live-source-master-password";
+const LIVE_BACKUP_PASSWORD: &str = "live-backup-file-password";
+const LIVE_DESTINATION_MASTER: &str = "live-destination-master-password";
+
+fn export_request(path: &std::path::Path) -> ExportRequest {
+    ExportRequest {
+        destination_path: path.to_string_lossy().into_owned(),
+        backup_password: Zeroizing::new(LIVE_BACKUP_PASSWORD.to_string()),
+        overwrite: false,
+    }
+}
+
+fn inspect_request(path: &std::path::Path) -> InspectRequest {
+    InspectRequest {
+        source_path: path.to_string_lossy().into_owned(),
+        backup_password: Zeroizing::new(LIVE_BACKUP_PASSWORD.to_string()),
+    }
+}
+
+fn restore_request(path: &std::path::Path) -> RestoreRequest {
+    RestoreRequest {
+        source_path: path.to_string_lossy().into_owned(),
+        backup_password: Zeroizing::new(LIVE_BACKUP_PASSWORD.to_string()),
+        mode: RESTORE_MODE_REPLACE.to_string(),
+        confirmation: REPLACE_CONFIRMATION.to_string(),
+        file_digest: digest_of(path),
+    }
+}
+
+/// What a preview reports for a file: the digest the restore has to match.
+fn digest_of(path: &std::path::Path) -> String {
+    use base64::Engine as _;
+    use sha2::{Digest as _, Sha256};
+
+    let bytes = std::fs::read(path).expect("the backup file was read for its digest");
+    let digest = Sha256::digest(&bytes);
+    format!(
+        "sha256:{}",
+        base64::engine::general_purpose::STANDARD.encode(digest.as_slice())
+    )
+}
+
+/// Opens a shell through a saved host and approves its key, leaving the session
+/// running so the caller can keep using it.
+async fn open_saved_shell(handle: &VaultHandle, host_id: &str) -> RunningSession {
+    let request = resolve_saved(handle, host_id)
+        .await
+        .expect("the saved host resolves to a request");
+    let mut session = RunningSession::start_with_vault(request, handle.clone());
+
+    assert!(
+        session
+            .saw(|events| host_key_prompt(events).is_some())
+            .await,
+        "no host key prompt arrived: {:?}",
+        session.log()
+    );
+    session.answer_host_key(true);
+
+    if !session
+        .saw(|events| status_reached(events, "connected"))
+        .await
+    {
+        let outcome = session.shutdown().await;
+        panic!("the saved host never reached a shell: {outcome:?}");
+    }
+
+    session
+}
+
+/// The point of this phase, against a real server: a whole vault — a group, a
+/// credential, a saved host, the host key the user approved and a snippet — is
+/// exported to one encrypted file and restored into a vault with a *different*
+/// master password, and every one of those records still works there.
+///
+/// The two session rules are checked where they really apply: an export is
+/// allowed while a session is open, and a restore is refused until that session
+/// has ended. Every password this test knows is checked against the events the
+/// frontend would receive, against the file on disk, and against the restored
+/// vault.
+#[tokio::test]
+#[ignore = "needs a real SSH server; see the module comment"]
+async fn live_backup_round_trip_restores_a_host_a_known_host_and_a_snippet() {
+    let Some(server) = LiveServer::from_env() else {
+        eprintln!("skipping: set TERMUST_LIVE_HOST and TERMUST_LIVE_USER to run the live tests");
+        return;
+    };
+    let Ok(password) = std::env::var("TERMUST_LIVE_PASSWORD") else {
+        eprintln!("skipping: TERMUST_LIVE_PASSWORD is not set");
+        return;
+    };
+
+    // The remote shell computes the number, so it can only appear in the output
+    // if the restored snippet really ran there.
+    let snippet_content = "echo termust-live-backup-$((7 * 6))";
+
+    // --- the source vault: a group, a credential and a host -----------------
+    let source_temp = TempVault::new();
+    let mut source = source_temp.vault();
+    source
+        .create(LIVE_SOURCE_MASTER)
+        .expect("the source vault was created");
+    let group = create_group_record(&source, "Live group").expect("the group was created");
+    let credential = create_password_record(&source, "live password", &password)
+        .expect("the credential was created");
+    let host = create_host_record(
+        &source,
+        &HostInput {
+            label: "live saved".to_string(),
+            address: server.host.clone(),
+            port: i64::from(server.port),
+            username: server.username.clone(),
+            group_id: Some(group.id.clone()),
+            credential_id: Some(credential.id.clone()),
+        },
+    )
+    .expect("the host was created");
+
+    // --- connecting through that host, and approving its key ----------------
+    let source_handle = VaultState::new(source).handle();
+    let mut session = open_saved_shell(&source_handle, &host.id).await;
+
+    session
+        .send(Command::Input(
+            b"echo termust-backup-before-$((2 + 2))\n".to_vec(),
+        ))
+        .await;
+    assert!(
+        session
+            .saw(|events| terminal_text(events).contains("termust-backup-before-4"))
+            .await,
+        "the source session never reached a shell: {:?}",
+        terminal_text(&session.log())
+    );
+
+    // Approving the key wrote it to the source vault, which is what makes it
+    // part of the backup.
+    let saved = source_handle
+        .with(list_known_host_records)
+        .expect("the known hosts were read");
+    assert_eq!(saved.len(), 1, "the approved host key was not saved");
+    let mut known = saved.into_iter();
+    let known = known.next().expect("one record");
+    assert_eq!(known.key_algorithm, "ssh-ed25519");
+    assert!(known.fingerprint_sha256.starts_with("SHA256:"));
+
+    // A snippet, stored while the session is open.
+    let snippet = source_handle
+        .with(|vault| {
+            create_snippet_record(
+                vault,
+                &SnippetInput {
+                    name: "Marker".to_string(),
+                    content: snippet_content.to_string(),
+                },
+            )
+        })
+        .expect("the snippet was stored");
+
+    // --- exporting, with the session still open ----------------------------
+    let backup_path = source_temp
+        .database()
+        .with_file_name("live-backup.termust-backup");
+    let exported = source_handle
+        .with(|vault| export(vault, &export_request(&backup_path)))
+        .expect("an export only reads, so an open session does not stop it");
+    assert_eq!(
+        exported.total_objects, 5,
+        "group, credential, host, key, snippet"
+    );
+    assert_eq!(exported.active_objects, 5);
+    assert_eq!(exported.deleted_objects, 0);
+
+    // The file on disk holds no marker and none of the passwords.
+    let file = std::fs::read(&backup_path).expect("the backup was read");
+    for secret in [
+        password.as_str(),
+        LIVE_SOURCE_MASTER,
+        LIVE_BACKUP_PASSWORD,
+        LIVE_DESTINATION_MASTER,
+        snippet_content,
+        known.fingerprint_sha256.as_str(),
+        server.host.as_str(),
+    ] {
+        assert!(
+            !file
+                .windows(secret.len())
+                .any(|window| window == secret.as_bytes()),
+            "the backup file holds {secret} in the clear"
+        );
+    }
+
+    // --- a destination vault with another master password -------------------
+    let destination_temp = TempVault::new();
+    let mut destination = destination_temp.vault();
+    destination
+        .create(LIVE_DESTINATION_MASTER)
+        .expect("the destination vault was created");
+
+    // The restore is refused while a session is open, before the vault or the
+    // file is touched.
+    let open = forwarding_session("live-backup", session.commands.clone());
+    assert!(
+        open.begin_maintenance().is_none(),
+        "a restore guard was taken while a session was open"
+    );
+    assert!(
+        destination
+            .list_objects(None)
+            .is_ok_and(|objects| objects.is_empty()),
+        "a refused restore wrote something"
+    );
+
+    // --- disconnect, then restore ------------------------------------------
+    let source_log = session.log();
+    let outcome = session.shutdown().await;
+    assert!(outcome.is_ok(), "the session failed: {outcome:?}");
+    assert_no_error_event(source_log.clone());
+
+    let after = SshState::default();
+    assert!(!after.any_session(), "the reached session ended");
+    drop(
+        after
+            .begin_maintenance()
+            .expect("a restore is allowed once no session is open"),
+    );
+
+    let restored =
+        restore(&destination, &restore_request(&backup_path)).expect("the restore succeeded");
+    assert_eq!(restored.replaced_objects, 5);
+
+    // The file can be read back from the vault it was restored into.
+    let inspected = inspect(&destination, &inspect_request(&backup_path))
+        .expect("the restored vault reads the same file");
+    assert_eq!(inspected.total_objects, exported.total_objects);
+    assert_eq!(inspected.count_by_kind, exported.count_by_kind);
+
+    // The destination keeps its own master password, and the other two do not
+    // open it.
+    let mut reopened = destination_temp.vault();
+    assert!(
+        reopened.unlock(LIVE_SOURCE_MASTER).is_err(),
+        "the source vault's password opened the destination"
+    );
+    assert!(
+        reopened.unlock(LIVE_BACKUP_PASSWORD).is_err(),
+        "the backup password opened a vault"
+    );
+    reopened
+        .unlock(LIVE_DESTINATION_MASTER)
+        .expect("the destination password still opens its own vault");
+
+    // --- the restored records work -----------------------------------------
+    let destination_handle = VaultState::new(destination).handle();
+    let (restored_host, restored_credential) = destination_handle
+        .with(|vault| credential_for_host(vault, &host.id))
+        .expect("the restored host resolves with its credential");
+    assert_eq!(restored_host.label, "live saved");
+    assert_eq!(restored_host.address, server.host);
+    assert_eq!(restored_host.port, server.port);
+    assert_eq!(restored_host.username, server.username);
+    assert_eq!(restored_host.group_id, Some(group.id.clone()));
+    assert_eq!(restored_credential.id, credential.id);
+    assert_eq!(restored_credential.secret, password_secret(&password));
+
+    // The restored host key answers the prompt: the connection reaches a shell
+    // without asking anything.
+    let mut restored_session = resolve_saved(&destination_handle, &host.id)
+        .await
+        .map(|request| RunningSession::start_with_vault(request, destination_handle.clone()))
+        .expect("the restored saved host resolves");
+    let reached = restored_session
+        .saw(|events| status_reached(events, "connected"))
+        .await;
+    let asked = restored_session
+        .log()
+        .iter()
+        .any(|(event, _)| event == EVENT_HOST_KEY);
+    if !reached {
+        let outcome = restored_session.shutdown().await;
+        panic!("the restored host never reached a shell: {outcome:?}");
+    }
+    assert!(
+        !asked,
+        "the restored known host did not answer the prompt: {:?}",
+        restored_session.log()
+    );
+
+    // The restored snippet runs on that shell, and the number comes from the
+    // remote side.
+    let restored_snippet = destination_handle
+        .with(|vault| get_snippet(vault, &snippet.id))
+        .expect("the restored snippet was read");
+    assert_eq!(restored_snippet.content, snippet_content);
+    let ssh = forwarding_session("live-backup-restored", restored_session.commands.clone());
+    send_content(&ssh, "live-backup-restored", &restored_snippet.content)
+        .expect("the restored session accepted the snippet");
+    assert!(
+        restored_session
+            .saw(|events| terminal_text(events).contains("termust-live-backup-42"))
+            .await,
+        "the restored snippet never ran: {:?}",
+        terminal_text(&restored_session.log())
+    );
+
+    let restored_log = restored_session.log();
+    let outcome = restored_session.shutdown().await;
+    assert!(outcome.is_ok(), "the restored session failed: {outcome:?}");
+    assert_no_error_event(restored_log.clone());
+
+    // No password, and no snippet content, reached either event stream.
+    for log in [&source_log, &restored_log] {
+        assert_secret_hidden(log, &password);
+        assert_secret_hidden(log, LIVE_SOURCE_MASTER);
+        assert_secret_hidden(log, LIVE_BACKUP_PASSWORD);
+        assert_secret_hidden(log, LIVE_DESTINATION_MASTER);
+    }
+    assert_secret_hidden(&restored_log, snippet_content);
 }
 
 /// This one needs no server: a saved host without a credential has to fail

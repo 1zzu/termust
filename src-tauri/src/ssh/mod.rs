@@ -69,7 +69,7 @@ type Notifier = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 /// The Tauri-managed state shared by every SSH command.
 #[derive(Default)]
 pub struct SshState {
-    sessions: StdMutex<HashMap<String, Session>>,
+    sessions: Arc<StdMutex<SessionTable>>,
     /// Host keys approved during this run, by canonical host identity.
     ///
     /// This is what makes a locked vault usable: an approval given while the
@@ -78,24 +78,104 @@ pub struct SshState {
     known_hosts: known_hosts::Remembered,
 }
 
+/// The sessions and the restore guard as one table.
+///
+/// They share a lock on purpose: a restore has to find no session and claim the
+/// guard in the same critical section that a new session checks it in, or the
+/// two could slip past each other.
+#[derive(Default)]
+struct SessionTable {
+    sessions: HashMap<String, Session>,
+    /// Set while a restore holds the maintenance guard.
+    maintaining: bool,
+}
+
 impl SshState {
-    fn lock(&self) -> MutexGuard<'_, HashMap<String, Session>> {
-        // A poisoned lock only means an earlier command panicked. The map itself
-        // is still usable, so recover instead of failing every later command.
+    fn lock(&self) -> MutexGuard<'_, SessionTable> {
+        // A poisoned lock only means an earlier command panicked. The table
+        // itself is still usable, so recover instead of failing every later
+        // command.
         self.sessions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn take(&self, session_id: &str) -> Option<Session> {
-        self.lock().remove(session_id)
+        self.lock().sessions.remove(session_id)
+    }
+
+    /// Whether any session exists, including one that is still connecting.
+    ///
+    /// A session is registered before it connects and removed when its task ends,
+    /// so this answers "could anything be talking to a host right now" without
+    /// reaching the network. The production paths ask [`Self::begin_maintenance`]
+    /// instead, because a restore has to see the sessions and claim the guard in
+    /// one step; a test uses this to say a session really went away.
+    #[cfg(test)]
+    pub(crate) fn any_session(&self) -> bool {
+        !self.lock().sessions.is_empty()
+    }
+
+    /// Claims the restore guard, or reports that a session is in the way.
+    ///
+    /// Looking at the sessions and setting the guard are one critical section,
+    /// so nothing can register a session in between: either a session is already
+    /// there and the caller gets `None`, or the guard is claimed first and every
+    /// later registration is refused until it is dropped. The guard is held for
+    /// a whole restore, including its blocking work, and it locks nothing else:
+    /// the lock is released before this returns.
+    pub(crate) fn begin_maintenance(&self) -> Option<MaintenanceGuard> {
+        let mut table = self.lock();
+        if table.maintaining || !table.sessions.is_empty() {
+            return None;
+        }
+        table.maintaining = true;
+        Some(MaintenanceGuard {
+            sessions: Arc::clone(&self.sessions),
+        })
+    }
+
+    /// Adds one session, unless a restore is in progress.
+    ///
+    /// Every path that can register a session goes through this — a quick
+    /// connect, a saved host and the tests' fake sessions alike — so the guard
+    /// cannot be bypassed. The previous session under the same id, if any, is
+    /// handed back so the caller can stop it.
+    fn register(&self, session_id: &str, session: Session) -> Result<Option<Session>, String> {
+        let mut table = self.lock();
+        if table.maintaining {
+            return Err("A backup restore is in progress. Try again when it finishes.".to_string());
+        }
+        Ok(table.sessions.insert(session_id.to_string(), session))
     }
 
     fn attach_task(&self, session_id: &str, task: JoinHandle<()>) {
-        let mut guard = self.lock();
-        if let Some(session) = guard.get_mut(session_id) {
+        let mut table = self.lock();
+        if let Some(session) = table.sessions.get_mut(session_id) {
             session.task = Some(task);
         }
+    }
+}
+
+/// A restore in progress, as long as this value is alive.
+///
+/// While it exists no SSH session can be registered, which is what makes the
+/// session check and the restore one atomic decision. It holds only a handle on
+/// the session table, never the lock itself, so the restore's file and crypto
+/// work happens outside every lock. The guard is released by `Drop`, which runs
+/// on success, on error, on an early return and during unwinding, so there is no
+/// path that can leave the app unable to open a session again.
+pub(crate) struct MaintenanceGuard {
+    sessions: Arc<StdMutex<SessionTable>>,
+}
+
+impl Drop for MaintenanceGuard {
+    fn drop(&mut self) {
+        let mut table = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        table.maintaining = false;
     }
 }
 
@@ -131,19 +211,29 @@ impl RecordedInput {
 #[cfg(test)]
 impl SshState {
     /// Registers a fake session under this id and hands back what it receives.
+    ///
+    /// It registers through the same gate a real session uses, so a restore
+    /// guard refuses it too; `try_record_input` is the version a test can assert
+    /// the refusal with.
     pub(crate) fn record_input(&self, session_id: &str) -> RecordedInput {
+        self.try_record_input(session_id)
+            .expect("a session was registered while a restore held the guard")
+    }
+
+    /// The same, reporting the refusal instead of panicking on it.
+    pub(crate) fn try_record_input(&self, session_id: &str) -> Result<RecordedInput, String> {
         let (commands, receiver) = mpsc::channel(COMMAND_QUEUE);
-        self.lock().insert(
-            session_id.to_string(),
+        self.register(
+            session_id,
             Session {
                 commands,
                 host_key_decision: None,
                 task: None,
             },
-        );
-        RecordedInput {
+        )?;
+        Ok(RecordedInput {
             commands: StdMutex::new(receiver),
-        }
+        })
     }
 }
 
@@ -280,13 +370,6 @@ pub fn start<R: Runtime>(
 ) -> Result<(), String> {
     request.validate()?;
 
-    // Reconnecting with the same id replaces whatever was running before.
-    if let Some(previous) = state.take(&request.session_id)
-        && let Some(task) = previous.task
-    {
-        task.abort();
-    }
-
     let (commands_tx, commands_rx) = mpsc::channel(COMMAND_QUEUE);
     let (decision_tx, decision_rx) = oneshot::channel();
 
@@ -308,14 +391,20 @@ pub fn start<R: Runtime>(
 
     // Register before spawning so a command arriving immediately already finds
     // the session, and so a prompt can be answered while it is still pending.
-    state.lock().insert(
-        session_id.clone(),
+    // The registration is also the gate a restore guard closes: if one is held,
+    // the session is refused here, before any task exists. Reconnecting with the
+    // same id replaces whatever was running before.
+    if let Some(previous) = state.register(
+        &session_id,
         Session {
             commands: commands_tx,
             host_key_decision: Some(decision_tx),
             task: None,
         },
-    );
+    )? && let Some(task) = previous.task
+    {
+        task.abort();
+    }
 
     let task = tauri::async_runtime::spawn(async move {
         let outcome = run_session(
@@ -397,6 +486,7 @@ pub fn resize(state: &SshState, session_id: &str, cols: u32, rows: u32) -> Resul
 pub fn respond_host_key(state: &SshState, session_id: &str, accepted: bool) -> Result<(), String> {
     let decision = state
         .lock()
+        .sessions
         .get_mut(session_id)
         .and_then(|session| session.host_key_decision.take());
 
@@ -429,6 +519,7 @@ pub async fn stop(state: &SshState, session_id: &str) {
 fn send(state: &SshState, session_id: &str, command: Command) -> Result<(), String> {
     let guard = state.lock();
     let session = guard
+        .sessions
         .get(session_id)
         .ok_or("This session is not connected.".to_string())?;
     session

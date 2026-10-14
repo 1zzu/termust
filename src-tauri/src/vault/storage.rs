@@ -236,6 +236,78 @@ pub fn list_objects(
     Ok(objects)
 }
 
+/// Every object row, tombstones included.
+///
+/// A portable backup is a copy of the whole table, so this is the one read that
+/// does not filter on `deleted_at`.
+pub fn list_all_objects(connection: &Connection) -> Result<Vec<StoredObject>, VaultError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, kind, encrypted_payload, nonce, crypto_version,
+                    created_at, updated_at, deleted_at
+             FROM vault_objects
+             ORDER BY id",
+        )
+        .map_err(storage_error)?;
+
+    let rows = statement
+        .query_map([], object_from_row)
+        .map_err(storage_error)?;
+
+    let mut objects = Vec::new();
+    for row in rows {
+        objects.push(row.map_err(storage_error)?);
+    }
+    Ok(objects)
+}
+
+/// Replaces every row of `vault_objects` with the given snapshot, inside one
+/// transaction.
+///
+/// The delete and every insert are one unit of work: either the whole snapshot
+/// is committed or the table is exactly as it was. `vault_meta` is never
+/// touched, so the vault's own identity, Vault Key and master password survive a
+/// restore unchanged.
+pub fn replace_objects(
+    connection: &mut Connection,
+    objects: &[StoredObject],
+) -> Result<(), VaultError> {
+    let transaction = connection.transaction().map_err(storage_error)?;
+
+    transaction
+        .execute("DELETE FROM vault_objects", [])
+        .map_err(storage_error)?;
+
+    {
+        let mut statement = transaction
+            .prepare(
+                "INSERT INTO vault_objects (
+                    id, kind, encrypted_payload, nonce, crypto_version,
+                    created_at, updated_at, deleted_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )
+            .map_err(storage_error)?;
+
+        for object in objects {
+            statement
+                .execute(params![
+                    object.id,
+                    object.kind,
+                    object.encrypted_payload,
+                    object.nonce,
+                    object.crypto_version,
+                    object.created_at,
+                    object.updated_at,
+                    object.deleted_at,
+                ])
+                .map_err(storage_error)?;
+        }
+    }
+
+    // The commit is the only point where the old rows disappear for good.
+    transaction.commit().map_err(storage_error)
+}
+
 fn object_from_row(row: &Row<'_>) -> rusqlite::Result<StoredObject> {
     Ok(StoredObject {
         id: row.get("id")?,

@@ -3,6 +3,7 @@
 //! The frontend owns the screens; this layer only exposes the SSH session
 //! commands it needs and keeps the session state alive between calls.
 
+mod backup;
 mod inventory;
 mod openssh;
 mod snippets;
@@ -73,6 +74,10 @@ async fn disconnect_ssh(state: State<'_, SshState>, session_id: String) -> Resul
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let result = tauri::Builder::default()
+        // The native open/save dialogs for choosing a backup file. The plugin
+        // hands back a path; it is never allowed to read or write one itself,
+        // which is why no filesystem plugin is installed.
+        .plugin(tauri_plugin_dialog::init())
         .manage(SshState::default())
         .setup(|app| {
             // The vault database lives in the app data directory the operating
@@ -119,7 +124,10 @@ pub fn run() {
             snippets::delete_snippet,
             snippets::run_snippet,
             openssh::preview_openssh_config,
-            openssh::import_openssh_hosts
+            openssh::import_openssh_hosts,
+            backup::export_encrypted_backup,
+            backup::inspect_encrypted_backup,
+            backup::restore_encrypted_backup
         ])
         .run(tauri::generate_context!());
 
@@ -146,7 +154,8 @@ mod tests {
         connect_ssh, disconnect_ssh, resize_ssh, respond_host_key, start_saved_ssh, write_ssh,
     };
     use crate::inventory::{
-        HostInput, KnownKey, create_host_record, create_password_record, remember_known_host,
+        HostInput, KnownKey, create_group_record, create_host_record, create_password_record,
+        list_group_records, remember_known_host,
     };
     use crate::ssh::SshState;
     use crate::vault::{VaultState, test_support::TempVault};
@@ -852,6 +861,509 @@ mod tests {
                 "{why} leaked the name into {error}"
             );
         }
+    }
+
+    /// A backup password that must never appear in an answer.
+    const BACKUP_PASSWORD: &str = "a-strong-backup-password";
+    /// A credential secret that must never appear in a backup summary either.
+    const BACKUP_SECRET: &str = "marker-backup-secret-1c8b";
+
+    /// A temporary directory for the files a backup test writes.
+    struct TempFiles(std::path::PathBuf);
+
+    impl TempFiles {
+        fn new() -> Self {
+            let directory =
+                std::env::temp_dir().join(format!("termust-ipc-backup-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&directory).expect("the directory was created");
+            Self(directory)
+        }
+
+        fn path(&self, name: &str) -> std::path::PathBuf {
+            self.0.join(name)
+        }
+    }
+
+    impl Drop for TempFiles {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A window wired like the app for the three backup commands, over a vault of
+    /// its own with one group, one credential, one host, one known host and one
+    /// snippet, either left open or locked.
+    fn backup_window(open: bool) -> (App<MockRuntime>, WebviewWindow<MockRuntime>, TempVault) {
+        let temp = TempVault::new();
+        let mut vault = temp.vault();
+        vault.create(VAULT_PASSWORD).expect("the vault was created");
+
+        let group = create_group_record(&vault, "Work").expect("the group was created");
+        let credential = crate::inventory::create_password_record(&vault, "Prod", BACKUP_SECRET)
+            .expect("the credential was created");
+        let host = create_host_record(
+            &vault,
+            &HostInput {
+                label: "Prod web".to_string(),
+                address: "web.example.com".to_string(),
+                port: 2222,
+                username: "deploy".to_string(),
+                group_id: Some(group.id),
+                credential_id: Some(credential.id),
+            },
+        )
+        .expect("the host was created");
+        vault.delete_object(&host.id).expect("the host was deleted");
+        remember_known_host(
+            &vault,
+            "example.com:22",
+            &KnownKey {
+                algorithm: "ssh-ed25519".to_string(),
+                fingerprint: "SHA256:ipc".to_string(),
+            },
+        )
+        .expect("the known host was recorded");
+        crate::snippets::create_snippet_record(
+            &vault,
+            &crate::snippets::SnippetInput {
+                name: "Deploy".to_string(),
+                content: "git pull\nmake release".to_string(),
+            },
+        )
+        .expect("the snippet was created");
+
+        if !open {
+            vault.lock();
+        }
+
+        let app = mock_builder()
+            .manage(SshState::default())
+            .manage(VaultState::new(vault))
+            .invoke_handler(tauri::generate_handler![
+                crate::backup::export_encrypted_backup,
+                crate::backup::inspect_encrypted_backup,
+                crate::backup::restore_encrypted_backup
+            ])
+            .build(mock_context(noop_assets()))
+            .expect("the app built");
+        let webview = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("the window built");
+
+        (app, webview, temp)
+    }
+
+    fn export_body(destination: &std::path::Path, password: &str) -> Value {
+        json!({
+            "request": {
+                "destinationPath": destination.to_string_lossy(),
+                "backupPassword": password,
+            }
+        })
+    }
+
+    fn inspect_body(source: &std::path::Path, password: &str) -> Value {
+        json!({
+            "request": {
+                "sourcePath": source.to_string_lossy(),
+                "backupPassword": password,
+            }
+        })
+    }
+
+    fn restore_body(source: &std::path::Path, password: &str) -> Value {
+        json!({
+            "request": {
+                "sourcePath": source.to_string_lossy(),
+                "backupPassword": password,
+                "mode": "replace",
+                "confirmation": "RESTORE",
+                // What a preview would have reported for this exact file. A
+                // test that changes the file has to build its own body.
+                "fileDigest": digest_of(source),
+            }
+        })
+    }
+
+    /// The digest a preview reports and a restore has to match: SHA-256 of the
+    /// file's bytes. A file that is not there has none, which the restore never
+    /// reaches because it fails to read the file first.
+    fn digest_of(path: &std::path::Path) -> String {
+        use base64::Engine as _;
+        use sha2::{Digest as _, Sha256};
+
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                let digest = Sha256::digest(&bytes);
+                format!(
+                    "sha256:{}",
+                    base64::engine::general_purpose::STANDARD.encode(digest.as_slice())
+                )
+            }
+            Err(_) => String::new(),
+        }
+    }
+
+    /// The backup contract: the command names, both argument names and the
+    /// camelCase fields of each answer. A summary carries counts and never a
+    /// secret, a name or a payload.
+    #[test]
+    fn the_backup_commands_answer_over_ipc() {
+        let (_app, webview, _temp) = backup_window(true);
+        let files = TempFiles::new();
+        let destination = files.path("ipc.termust-backup");
+
+        let exported = invoke(
+            &webview,
+            "export_encrypted_backup",
+            export_body(&destination, BACKUP_PASSWORD),
+        )
+        .expect("the export answered");
+
+        let mut fields: Vec<&str> = exported
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(
+            fields,
+            vec![
+                "activeObjects",
+                "bytes",
+                "countByKind",
+                "createdAt",
+                "deletedObjects",
+                "fileName",
+                "totalObjects",
+            ],
+            "the export answer changed"
+        );
+        assert_eq!(exported["fileName"], json!("ipc.termust-backup"));
+        assert_eq!(exported["totalObjects"], 5);
+        assert_eq!(exported["activeObjects"], 4);
+        assert_eq!(exported["deletedObjects"], 1);
+        assert!(exported["bytes"].as_u64().expect("a size") > 0);
+
+        let inspected = invoke(
+            &webview,
+            "inspect_encrypted_backup",
+            inspect_body(&destination, BACKUP_PASSWORD),
+        )
+        .expect("the inspect answered");
+        let mut fields: Vec<&str> = inspected
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(
+            fields,
+            vec![
+                "activeObjects",
+                "countByKind",
+                "createdAt",
+                "deletedObjects",
+                "fileDigest",
+                "sourceAppVersion",
+                "totalObjects",
+            ],
+            "the inspect answer changed"
+        );
+        assert_eq!(inspected["totalObjects"], exported["totalObjects"]);
+        assert_eq!(inspected["countByKind"], exported["countByKind"]);
+
+        // A preview shows how much data there is, never what it is.
+        let answer = format!("{exported}{inspected}");
+        for marker in [BACKUP_PASSWORD, BACKUP_SECRET, "web.example.com", "Deploy"] {
+            assert!(
+                !answer.contains(marker),
+                "a backup summary repeated {marker}"
+            );
+        }
+
+        let restored = invoke(
+            &webview,
+            "restore_encrypted_backup",
+            restore_body(&destination, BACKUP_PASSWORD),
+        )
+        .expect("the restore answered");
+        let mut fields: Vec<&str> = restored
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(
+            fields,
+            vec![
+                "activeObjects",
+                "countByKind",
+                "createdAt",
+                "deletedObjects",
+                "fileName",
+                "replacedObjects",
+            ],
+            "the restore answer changed"
+        );
+        assert_eq!(restored["replacedObjects"], 5);
+        assert!(!restored.to_string().contains(BACKUP_PASSWORD));
+
+        // The argument names are part of the contract too: a renamed one is a
+        // rejected call, not a silent no-op.
+        for (cmd, body, why) in [
+            (
+                "export_encrypted_backup",
+                json!({ "path": destination.to_string_lossy(), "backupPassword": BACKUP_PASSWORD }),
+                "a renamed destination",
+            ),
+            (
+                "inspect_encrypted_backup",
+                json!({ "path": destination.to_string_lossy(), "backupPassword": BACKUP_PASSWORD }),
+                "a renamed source",
+            ),
+            (
+                "restore_encrypted_backup",
+                json!({ "path": destination.to_string_lossy(), "backupPassword": BACKUP_PASSWORD, "mode": "replace", "confirmation": "RESTORE" }),
+                "a renamed source",
+            ),
+        ] {
+            let error = invoke(&webview, cmd, body).expect_err(why);
+            assert!(!error.to_string().contains(BACKUP_PASSWORD));
+        }
+
+        // A request that carries something else is refused, not ignored.
+        for (cmd, extra) in [
+            ("export_encrypted_backup", json!({ "overwritePath": true })),
+            ("inspect_encrypted_backup", json!({ "revealSecrets": true })),
+            ("restore_encrypted_backup", json!({ "merge": true })),
+        ] {
+            let mut request = match cmd {
+                "export_encrypted_backup" => export_body(&destination, BACKUP_PASSWORD),
+                "inspect_encrypted_backup" => inspect_body(&destination, BACKUP_PASSWORD),
+                _ => restore_body(&destination, BACKUP_PASSWORD),
+            };
+            request["request"]
+                .as_object_mut()
+                .expect("an object")
+                .extend(extra.as_object().expect("an object").clone());
+            assert!(
+                invoke(&webview, cmd, request).is_err(),
+                "{cmd} accepted an unknown field"
+            );
+        }
+    }
+
+    /// A restore has to name the replace mode and the typed phrase, and the
+    /// backend checks both itself rather than trusting the disabled button.
+    #[test]
+    fn the_restore_command_requires_the_mode_and_the_phrase() {
+        let (app, webview, _temp) = backup_window(true);
+        let files = TempFiles::new();
+        let source = files.path("confirm.termust-backup");
+        invoke(
+            &webview,
+            "export_encrypted_backup",
+            export_body(&source, BACKUP_PASSWORD),
+        )
+        .expect("the export answered");
+
+        let snapshot = objects_in_vault(&app);
+        for (mode, confirmation, why) in [
+            ("merge", "RESTORE", "another mode"),
+            ("replace", "restore", "the phrase in the wrong case"),
+            ("replace", "", "an empty phrase"),
+        ] {
+            let mut request = restore_body(&source, BACKUP_PASSWORD);
+            request["request"]["mode"] = json!(mode);
+            request["request"]["confirmation"] = json!(confirmation);
+            let error = invoke(&webview, "restore_encrypted_backup", request).expect_err(why);
+            assert!(!error.to_string().contains(BACKUP_PASSWORD));
+        }
+        for (field, why) in [
+            ("mode", "a request with no mode"),
+            ("confirmation", "a request with no phrase"),
+        ] {
+            let mut request = restore_body(&source, BACKUP_PASSWORD);
+            request["request"]
+                .as_object_mut()
+                .expect("an object")
+                .remove(field);
+            assert!(
+                invoke(&webview, "restore_encrypted_backup", request).is_err(),
+                "{why} was accepted"
+            );
+        }
+
+        assert_eq!(objects_in_vault(&app), snapshot, "a refused restore wrote");
+    }
+
+    /// A restore is refused while a session is open or connecting, before the
+    /// vault or the file is touched.
+    #[test]
+    fn the_restore_command_refuses_an_open_session() {
+        let (app, webview, _temp) = backup_window(true);
+        let files = TempFiles::new();
+        let source = files.path("session.termust-backup");
+        invoke(
+            &webview,
+            "export_encrypted_backup",
+            export_body(&source, BACKUP_PASSWORD),
+        )
+        .expect("the export answered");
+
+        // An export only reads, so it is allowed while the session is open.
+        let second = files.path("session-2.termust-backup");
+        invoke(
+            &webview,
+            "export_encrypted_backup",
+            export_body(&second, BACKUP_PASSWORD),
+        )
+        .expect("an export is allowed while a session is open");
+
+        let recorded = app.state::<SshState>().record_input("session-1");
+        let snapshot = objects_in_vault(&app);
+        let error = invoke(
+            &webview,
+            "restore_encrypted_backup",
+            restore_body(&source, BACKUP_PASSWORD),
+        )
+        .expect_err("a restore must refuse an open session");
+
+        assert_eq!(
+            error,
+            json!("Disconnect the SSH session before restoring a backup.")
+        );
+        assert_eq!(objects_in_vault(&app), snapshot, "a refused restore wrote");
+        assert!(
+            recorded.take().is_empty(),
+            "a restore sent input to a session"
+        );
+    }
+
+    /// The three commands refuse a locked vault, including a restore whose file
+    /// does not exist: the vault is checked before the file is.
+    #[test]
+    fn the_backup_commands_refuse_a_locked_vault() {
+        let (_app, webview, _temp) = backup_window(false);
+        let files = TempFiles::new();
+        let path = files.path("locked.termust-backup");
+        let locked = json!("The vault is locked. Unlock it first.");
+
+        for (cmd, body) in [
+            (
+                "export_encrypted_backup",
+                export_body(&path, BACKUP_PASSWORD),
+            ),
+            (
+                "inspect_encrypted_backup",
+                inspect_body(&path, BACKUP_PASSWORD),
+            ),
+            (
+                "restore_encrypted_backup",
+                restore_body(&path, BACKUP_PASSWORD),
+            ),
+        ] {
+            let error = invoke(&webview, cmd, body).expect_err(cmd);
+            assert_eq!(error, locked, "{cmd}");
+            assert!(!error.to_string().contains(BACKUP_PASSWORD));
+        }
+        assert!(!path.exists(), "a locked vault wrote a file");
+    }
+
+    /// A password that is wrong is reported as one generic message, and nothing on
+    /// disk or in the vault changes.
+    #[test]
+    fn a_failed_inspect_over_ipc_repeats_nothing() {
+        let (app, webview, _temp) = backup_window(true);
+        let files = TempFiles::new();
+        let source = files.path("generic.termust-backup");
+        invoke(
+            &webview,
+            "export_encrypted_backup",
+            export_body(&source, BACKUP_PASSWORD),
+        )
+        .expect("the export answered");
+        let before = std::fs::read(&source).expect("the file was read");
+        let snapshot = objects_in_vault(&app);
+
+        for password in [
+            "not-the-password",
+            "",
+            "a-strong-backup-passwords",
+            // The master password is not the backup password.
+            VAULT_PASSWORD,
+        ] {
+            let error = invoke(
+                &webview,
+                "inspect_encrypted_backup",
+                inspect_body(&source, password),
+            )
+            .expect_err("a wrong password must be refused");
+            assert_eq!(
+                error,
+                json!(
+                    "The backup could not be opened. The password is wrong or the file is damaged."
+                )
+            );
+            for marker in [BACKUP_PASSWORD, BACKUP_SECRET, VAULT_PASSWORD] {
+                assert!(
+                    !error.to_string().contains(marker),
+                    "an error repeated {marker}"
+                );
+            }
+        }
+
+        assert_eq!(objects_in_vault(&app), snapshot, "a failed inspect wrote");
+        assert_eq!(std::fs::read(&source).expect("the file was read"), before);
+    }
+
+    /// A successful restore is visible to the same commands the UI uses to
+    /// refresh its screens.
+    #[test]
+    fn a_restore_over_ipc_refreshes_what_is_stored() {
+        let (app, webview, _temp) = backup_window(true);
+        let files = TempFiles::new();
+        let source = files.path("refresh.termust-backup");
+        invoke(
+            &webview,
+            "export_encrypted_backup",
+            export_body(&source, BACKUP_PASSWORD),
+        )
+        .expect("the export answered");
+
+        // Something new that the restore has to remove.
+        let handle = app.state::<VaultState>().handle();
+        handle.with(|vault| create_group_record(vault, "Stale").expect("a group was created"));
+        assert_eq!(saved_hosts(&app).len(), 0, "the export's host was deleted");
+        assert_eq!(
+            handle.with(|vault| list_group_records(vault)
+                .expect("the groups were listed")
+                .len()),
+            2
+        );
+
+        invoke(
+            &webview,
+            "restore_encrypted_backup",
+            restore_body(&source, BACKUP_PASSWORD),
+        )
+        .expect("the restore answered");
+
+        assert_eq!(
+            handle.with(|vault| list_group_records(vault)
+                .expect("the groups were listed")
+                .iter()
+                .map(|group| group.name.clone())
+                .collect::<Vec<String>>()),
+            vec!["Work".to_string()],
+            "the restored groups are not what the backup held"
+        );
+        assert_eq!(saved_hosts(&app).len(), 0, "the deleted host came back");
+        assert_eq!(objects_in_vault(&app).len(), 4);
     }
 
     /// Markers that must never appear in an answer. They are the values of the

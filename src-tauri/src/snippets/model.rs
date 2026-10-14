@@ -75,9 +75,12 @@ impl RunSnippetRequest {
     }
 }
 
-/// A required name, trimmed to its final value. The message names the field
-/// only; it never repeats the value.
-pub(super) fn name(value: &str) -> Result<String, SnippetError> {
+/// A required name, trimmed, without building the trimmed copy.
+///
+/// This is the rule itself. `name` hands back the trimmed string a command
+/// stores; the backup validator uses this one to check a decoded snippet
+/// without allocating a second copy of it.
+pub(super) fn check_name(value: &str) -> Result<&str, SnippetError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(SnippetError::Invalid(
@@ -89,17 +92,18 @@ pub(super) fn name(value: &str) -> Result<String, SnippetError> {
             "Snippet name must be at most {MAX_NAME_LEN} characters."
         )));
     }
-    Ok(trimmed.to_string())
+    Ok(trimmed)
 }
 
-/// The content exactly as the user wrote it: never trimmed, never normalised,
-/// with its quoting and line breaks left alone.
-///
-/// Nothing here looks at what the text means. Termust does not parse shell
-/// syntax, so the only checks are ones that cannot disagree with a shell: a
-/// non-empty payload, a byte limit, and no NUL byte, which no terminal input
-/// can carry.
-pub(super) fn content(value: &str) -> Result<String, SnippetError> {
+/// A required name, trimmed to its final value. The message names the field
+/// only; it never repeats the value.
+pub(super) fn name(value: &str) -> Result<String, SnippetError> {
+    Ok(check_name(value)?.to_string())
+}
+
+/// The content rule, without building the copy. The content is never trimmed
+/// and never normalised, so a command stores exactly what it checked.
+pub(super) fn check_content(value: &str) -> Result<&str, SnippetError> {
     if value.is_empty() {
         return Err(SnippetError::Invalid(
             "Snippet content cannot be empty.".to_string(),
@@ -115,5 +119,16 @@ pub(super) fn content(value: &str) -> Result<String, SnippetError> {
             "Snippet content cannot contain a NUL character.".to_string(),
         ));
     }
-    Ok(value.to_string())
+    Ok(value)
+}
+
+/// The content exactly as the user wrote it: never trimmed, never normalised,
+/// with its quoting and line breaks left alone.
+///
+/// Nothing here looks at what the text means. Termust does not parse shell
+/// syntax, so the only checks are ones that cannot disagree with a shell: a
+/// non-empty payload, a byte limit, and no NUL byte, which no terminal input
+/// can carry.
+pub(super) fn content(value: &str) -> Result<String, SnippetError> {
+    Ok(check_content(value)?.to_string())
 }

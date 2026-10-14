@@ -27,6 +27,7 @@
 	} from '#lib/components/ui/select';
 	import { Textarea } from '#lib/components/ui/textarea';
 	import { errorMessage } from '#lib/errors';
+	import BackupRestore from '#lib/components/backup-restore.svelte';
 	import ImportOpensshDialog from '#lib/components/import-openssh-dialog.svelte';
 	import {
 		NO_RELATION,
@@ -104,7 +105,9 @@
 		onconnect?: (host: Host) => void;
 	} = $props();
 
-	let section = $state<'hosts' | 'credentials' | 'groups' | 'known_hosts' | 'snippets'>('hosts');
+	let section = $state<'hosts' | 'credentials' | 'groups' | 'known_hosts' | 'snippets' | 'backup'>(
+		'hosts'
+	);
 	let hosts = $state<Host[]>([]);
 	let groups = $state<Group[]>([]);
 	let credentials = $state<CredentialSummary[]>([]);
@@ -555,6 +558,13 @@
 				>
 					Snippets ({snippets.length})
 				</Button>
+				<Button
+					size="sm"
+					variant={section === 'backup' ? 'default' : 'outline'}
+					onclick={() => show('backup')}
+				>
+					Backup &amp; Restore
+				</Button>
 			</div>
 
 			{#if errorText}
@@ -762,6 +772,17 @@
 							{/each}
 						</ul>
 					{/if}
+				</div>
+			{:else if section === 'backup'}
+				<div class="grid gap-3">
+					<h3 class="text-sm font-medium">Backup &amp; Restore</h3>
+					<p class="text-xs text-muted-foreground">
+						A backup is one encrypted file, locked with a password you choose for it. It holds every
+						group, host, credential, known host and snippet in this vault, and it can be restored
+						into this vault or into another one with a different master password. It is not a sync:
+						restoring replaces every record in this vault with the ones in the file.
+					</p>
+					<BackupRestore {vaultStatus} {sessionBusy} onrestored={refresh} />
 				</div>
 			{:else}
 				<div class="grid gap-3">

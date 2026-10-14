@@ -204,10 +204,16 @@ impl KnownHost {
     }
 }
 
-/// A required text field, trimmed to its final value.
+/// A required text field, trimmed, without building the trimmed copy.
 ///
-/// The message names the field only; it never repeats the value.
-pub fn required(value: &str, field: &str, max: usize) -> Result<String, InventoryError> {
+/// This is the rule itself. `required` hands back the trimmed string a command
+/// stores; the backup validator uses this one to check a record it decoded
+/// without allocating a second copy of it.
+pub(super) fn check_required<'a>(
+    value: &'a str,
+    field: &str,
+    max: usize,
+) -> Result<&'a str, InventoryError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(InventoryError::Invalid(format!("{field} cannot be empty.")));
@@ -217,7 +223,14 @@ pub fn required(value: &str, field: &str, max: usize) -> Result<String, Inventor
             "{field} must be at most {max} characters."
         )));
     }
-    Ok(trimmed.to_string())
+    Ok(trimmed)
+}
+
+/// A required text field, trimmed to its final value.
+///
+/// The message names the field only; it never repeats the value.
+pub fn required(value: &str, field: &str, max: usize) -> Result<String, InventoryError> {
+    Ok(check_required(value, field, max)?.to_string())
 }
 
 /// A port a TCP connection can actually use.
@@ -239,9 +252,13 @@ pub fn optional_id(value: &Option<String>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// A secret exactly as the user gave it: never trimmed, because a password may
-/// legitimately contain leading or trailing spaces.
-pub fn secret(value: &str, field: &str) -> Result<Zeroizing<String>, InventoryError> {
+/// A secret: never empty and never unbounded, without copying it.
+///
+/// A secret is never trimmed, because a password may legitimately contain
+/// leading or trailing spaces, so the value a command stores is the value it
+/// was given. The backup validator uses this to check a decoded credential
+/// without making a second copy of its secret.
+pub(super) fn check_secret(value: &str, field: &str) -> Result<(), InventoryError> {
     if value.is_empty() {
         return Err(InventoryError::Invalid(format!("{field} cannot be empty.")));
     }
@@ -250,6 +267,13 @@ pub fn secret(value: &str, field: &str) -> Result<Zeroizing<String>, InventoryEr
             "{field} is longer than {MAX_SECRET_LEN} bytes."
         )));
     }
+    Ok(())
+}
+
+/// A secret exactly as the user gave it: never trimmed, because a password may
+/// legitimately contain leading or trailing spaces.
+pub fn secret(value: &str, field: &str) -> Result<Zeroizing<String>, InventoryError> {
+    check_secret(value, field)?;
     Ok(Zeroizing::new(value.to_string()))
 }
 
