@@ -28,14 +28,13 @@
 	import { Textarea } from '#lib/components/ui/textarea';
 	import { errorMessage } from '#lib/errors';
 	import BackupRestore from '#lib/components/backup-restore.svelte';
-	import ImportOpensshDialog from '#lib/components/import-openssh-dialog.svelte';
+	import HostWorkspace from '#lib/components/inventory/host-workspace.svelte';
 	import {
 		NO_RELATION,
 		addedAt,
 		createGroup,
 		createHost,
 		createPasswordCredential,
-		canConnectHost,
 		createPrivateKeyCredential,
 		credentialFormProblem,
 		deleteCredential,
@@ -45,7 +44,6 @@
 		emptyHostForm,
 		emptyInventory,
 		forgetKnownHost,
-		hostConnectionHint,
 		hostFormProblem,
 		hostInput,
 		inventoryVisible,
@@ -253,24 +251,6 @@
 		runSession = null;
 		running = false;
 		errorText = '';
-	}
-
-	function groupName(id: string | null): string {
-		return groups.find((group) => group.id === id)?.name ?? '';
-	}
-
-	function credentialName(id: string | null): string {
-		return credentials.find((credential) => credential.id === id)?.name ?? '';
-	}
-
-	/** `user@host:port` plus the names of whatever it is linked to. */
-	function hostSummary(host: Host): string {
-		const parts = [`${host.username}@${host.address}:${host.port}`];
-		const group = groupName(host.groupId);
-		if (group !== '') parts.push(group);
-		const credential = credentialName(host.credentialId);
-		if (credential !== '') parts.push(credential);
-		return parts.join(' · ');
 	}
 
 	// --- hosts ---
@@ -605,61 +585,19 @@
 			{/if}
 
 			{#if section === 'hosts'}
-				<div class="grid gap-3">
-					<div class="flex items-center justify-between gap-2">
-						<h3 class="text-sm font-medium">Hosts</h3>
-						<div class="flex shrink-0 gap-2">
-							<ImportOpensshDialog {vaultStatus} onimported={refresh} />
-							<Button size="sm" onclick={openCreateHost} disabled={busy}>New host</Button>
-						</div>
-					</div>
-					<p class="text-xs text-muted-foreground">
-						Saved hosts live encrypted in this vault. Importing from a basic OpenSSH config only
-						creates hosts: each one needs a Credential before its Connect button works.
-					</p>
-					{#if hosts.length === 0}
-						<p class="text-xs text-muted-foreground">No saved hosts yet.</p>
-					{:else}
-						<ul class="grid gap-2">
-							{#each hosts as host (host.id)}
-								<li class="flex items-center justify-between gap-3 rounded-lg border p-2">
-									<div class="min-w-0">
-										<p class="truncate text-sm font-medium">{host.label}</p>
-										<p class="truncate text-xs text-muted-foreground">{hostSummary(host)}</p>
-										{#if hostConnectionHint(host)}
-											<p class="truncate text-xs text-amber-500">{hostConnectionHint(host)}</p>
-										{/if}
-									</div>
-									<div class="flex shrink-0 gap-2">
-										<Button
-											size="sm"
-											onclick={() => onconnect?.(host)}
-											disabled={busy || hostConnecting(host.id) || !canConnectHost(host)}
-										>
-											Connect
-										</Button>
-										<Button
-											variant="outline"
-											size="sm"
-											onclick={() => openEditHost(host)}
-											disabled={busy}
-										>
-											Edit
-										</Button>
-										<Button
-											variant="outline"
-											size="sm"
-											onclick={() => removeHost(host)}
-											disabled={busy}
-										>
-											Delete
-										</Button>
-									</div>
-								</li>
-							{/each}
-						</ul>
-					{/if}
-				</div>
+				<HostWorkspace
+					{hosts}
+					{groups}
+					{credentials}
+					{busy}
+					{vaultStatus}
+					{hostConnecting}
+					onconnect={(host) => onconnect?.(host)}
+					onedit={openEditHost}
+					ondelete={removeHost}
+					oncreate={openCreateHost}
+					onimported={refresh}
+				/>
 			{:else if section === 'credentials'}
 				<div class="grid gap-3">
 					<div class="flex items-center justify-between">
