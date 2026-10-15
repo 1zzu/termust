@@ -95,7 +95,7 @@
 					class="relative h-full w-full flex-col overflow-hidden p-2"
 					style:display={isTerminalRoute ? 'flex' : 'none'}
 				>
-					{#if terminalStore.activeSession?.errorMessage}
+					{#if terminalStore.activeSession?.errorMessage && terminalStore.activeSession?.status !== 'error'}
 						<div class="mb-2 shrink-0">
 							<Alert variant="destructive">
 								<AlertTitle>Connection failed ({terminalStore.activeSession.title})</AlertTitle>
@@ -125,6 +125,13 @@
 								{session}
 								active={isTerminalRoute && session.id === terminalStore.activeSessionId}
 								onready={(id, runtime) => terminalStore.handleReady(id, runtime)}
+								onclose={(id) => {
+									void terminalStore.closeTab(id);
+									if (terminalStore.sessions.length <= 1) {
+										void goto('/hosts');
+									}
+								}}
+								onretry={(id) => void terminalStore.reconnectSession(id)}
 							/>
 						{/each}
 					</div>

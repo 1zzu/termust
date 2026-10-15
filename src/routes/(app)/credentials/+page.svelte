@@ -1,21 +1,30 @@
 <script lang="ts">
-	import CredentialsPanel from '#lib/components/inventory/credentials-panel.svelte';
+	import CredentialsWorkspace from '#lib/components/inventory/credentials-workspace.svelte';
 	import { Alert, AlertDescription, AlertTitle } from '#lib/components/ui/alert';
 	import { inventoryStore } from '#lib/stores/inventory-data.svelte';
+	import { vaultStore } from '#lib/stores/vault.svelte';
 </script>
 
-<div class="flex h-full min-h-0 flex-col gap-4">
+<div class="-m-4 flex h-[calc(100%+2rem)] min-h-0 flex-col">
 	{#if inventoryStore.errorText}
-		<Alert variant="destructive" class="shrink-0">
-			<AlertTitle>Inventory error</AlertTitle>
-			<AlertDescription>{inventoryStore.errorText}</AlertDescription>
-		</Alert>
+		<div class="shrink-0 p-4 pb-0">
+			<Alert variant="destructive">
+				<AlertTitle>Inventory error</AlertTitle>
+				<AlertDescription>{inventoryStore.errorText}</AlertDescription>
+			</Alert>
+		</div>
 	{/if}
 
-	<CredentialsPanel
-		credentials={inventoryStore.credentials}
-		busy={inventoryStore.busy}
-		onmutate={(work) => inventoryStore.mutate(work)}
-		onerror={(message) => inventoryStore.reportError(message)}
-	/>
+	<div class="h-full min-h-0 flex-1">
+		<CredentialsWorkspace
+			credentials={inventoryStore.credentials}
+			hosts={inventoryStore.hosts}
+			busy={inventoryStore.busy}
+			vaultStatus={vaultStore.status}
+			onmutate={(work) => inventoryStore.mutate(work)}
+			onerror={(message) => inventoryStore.reportError(message)}
+			onrefresh={() => inventoryStore.refresh()}
+			onopenvault={() => vaultStore.openGate()}
+		/>
+	</div>
 </div>

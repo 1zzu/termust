@@ -1,5 +1,4 @@
 <script lang="ts">
-	import * as Sidebar from '#lib/components/ui/sidebar';
 	import SessionTabStrip from '#lib/components/session-tab-strip.svelte';
 	import { getVisualActiveSessionId } from '#lib/components/vault/vault-gate-state';
 	import { Button } from '#lib/components/ui/button';
@@ -57,10 +56,6 @@
 	{#if showTrafficLightMargin}
 		<!-- Safe area for macOS traffic lights (80px), non-interactive and draggable -->
 		<div class="h-full w-20 shrink-0" data-tauri-drag-region aria-hidden="true"></div>
-	{:else}
-		<!-- Sidebar toggle trigger -->
-		<Sidebar.Trigger class="size-7 shrink-0" />
-		<div class="mx-1 h-4 w-px shrink-0 bg-border/60" aria-hidden="true"></div>
 	{/if}
 
 	<!-- Integrated session tabs (interactive, non-drag) -->
@@ -70,7 +65,7 @@
 			activeSessionId={visualActiveSessionId}
 			onselect={onselectsession}
 			onclose={onclosesession}
-			class="border-0 bg-transparent p-0"
+			class="scrollbar-none border-0 bg-transparent p-0"
 		/>
 	</div>
 
@@ -78,7 +73,7 @@
 	<div class="h-full min-w-4 flex-1" data-tauri-drag-region></div>
 
 	<!-- Right area: active session summary and controls -->
-	<div class="flex shrink-0 items-center gap-2 text-xs">
+	<!-- <div class="flex shrink-0 items-center gap-2 text-xs">
 		{#if visualActiveSession}
 			<div class="flex items-center gap-1.5 px-1 py-0.5 text-muted-foreground">
 				<span class="size-2 rounded-full {activeStatusDot(visualActiveSession)}" aria-hidden="true"
@@ -89,9 +84,6 @@
 				>
 					{visualActiveSession.title}
 				</span>
-				<span class="text-[11px] text-muted-foreground"
-					>({statusLabel(visualActiveSession.status)})</span
-				>
 			</div>
 			{#if canDisconnect && ondisconnect}
 				<Button
@@ -110,7 +102,7 @@
 				<span class="text-[11px]">{statusLabel('idle')}</span>
 			</div>
 		{/if}
-	</div>
+	</div> -->
 
 	<!-- Trailing draggable spacer -->
 	<div class="h-full w-2 shrink-0" data-tauri-drag-region aria-hidden="true"></div>

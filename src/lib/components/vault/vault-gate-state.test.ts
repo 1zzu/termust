@@ -67,15 +67,15 @@ describe('visual terminal tab mapping', () => {
 });
 
 describe('Tauri window configuration for trafficLightPosition', () => {
-	it('contains explicit trafficLightPosition with x: 14, y: 15 in tauri.conf.json', () => {
+	it('contains explicit trafficLightPosition with x: 18, y: 20 in tauri.conf.json', () => {
 		const mainWindow = tauriConf.app.windows[0];
 
 		expect(mainWindow.titleBarStyle).toBe('Overlay');
 		expect(mainWindow.decorations).toBe(true);
 		expect(mainWindow.hiddenTitle).toBe(true);
 		expect(mainWindow.trafficLightPosition).toEqual({
-			x: 14,
-			y: 15
+			x: 18,
+			y: 20
 		});
 	});
 });

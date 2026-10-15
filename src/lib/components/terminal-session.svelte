@@ -4,7 +4,7 @@
 	import { Terminal } from '@xterm/xterm';
 	import '@xterm/xterm/css/xterm.css';
 
-	import { resizeSsh, writeSsh } from '#lib/ssh';
+	import { disconnectSsh, resizeSsh, writeSsh } from '#lib/ssh';
 	import {
 		inputToSend,
 		panelElementId,
@@ -13,6 +13,7 @@
 		type TerminalRuntime,
 		type TerminalSession
 	} from '#lib/session-tabs';
+	import ConnectingOverlay from './connecting-overlay.svelte';
 
 	/**
 	 * One tab's terminal.
@@ -25,13 +26,17 @@
 	let {
 		session,
 		active = false,
-		onready
+		onready,
+		onclose,
+		onretry
 	}: {
 		session: TerminalSession;
 		/** Whether this tab is the one on screen. */
 		active?: boolean;
 		/** Called once the terminal exists, so the page can start the session. */
 		onready?: (sessionId: string, runtime: TerminalRuntime) => void;
+		onclose?: (sessionId: string) => void;
+		onretry?: (sessionId: string) => void;
 	} = $props();
 
 	let container: HTMLDivElement | null = $state(null);
@@ -112,15 +117,19 @@
 	function fit() {
 		if (disposed || !active || !fitAddon || !terminal || !container) return;
 		if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
-		fitAddon.fit();
+		try {
+			fitAddon.fit();
 
-		const outgoing = resizeToSend(session, terminal.cols, terminal.rows);
-		if (!outgoing) return;
-		if (outgoing.cols === reported.cols && outgoing.rows === reported.rows) return;
-		reported = { cols: outgoing.cols, rows: outgoing.rows };
-		void resizeSsh(outgoing.sessionId, outgoing.cols, outgoing.rows).catch(() => {
-			// As above: the session's status is where a failure shows up.
-		});
+			const outgoing = resizeToSend(session, terminal.cols, terminal.rows);
+			if (!outgoing) return;
+			if (outgoing.cols === reported.cols && outgoing.rows === reported.rows) return;
+			reported = { cols: outgoing.cols, rows: outgoing.rows };
+			void resizeSsh(outgoing.sessionId, outgoing.cols, outgoing.rows).catch(() => {
+				// As above: the session's status is where a failure shows up.
+			});
+		} catch {
+			// Ignore intermediate measurement errors during layout shifts
+		}
 	}
 
 	// Coming forward is what makes a tab usable: fit it, focus it, and report
@@ -133,20 +142,74 @@
 		});
 	});
 
+	const isConnectingPhase = $derived(
+		session.status === 'idle' ||
+		session.status === 'connecting' ||
+		session.status === 'verifying_host_key' ||
+		session.status === 'authenticating' ||
+		session.status === 'error'
+	);
+
+	let transitionDone = $state(false);
+
+	$effect(() => {
+		if (session.status === 'connected') {
+			const timer = setTimeout(() => {
+				transitionDone = true;
+				void tick().then(() => {
+					fit();
+					runtime.focus();
+				});
+			}, 500);
+			return () => clearTimeout(timer);
+		} else {
+			transitionDone = false;
+		}
+	});
+
+	const overlayVisible = $derived(
+		isConnectingPhase || (session.status === 'connected' && !transitionDone)
+	);
+
 	// A shell that just came up is told the current size too, in case the window
 	// was resized while the session was still connecting.
 	$effect(() => {
-		if (active && session.status === 'connected') {
-			void tick().then(() => fit());
+		if (active && session.status === 'connected' && !overlayVisible) {
+			void tick().then(() => {
+				fit();
+				runtime.focus();
+			});
 		}
 	});
 </script>
 
 <div
-	bind:this={container}
 	id={panelElementId(session.id)}
 	role="tabpanel"
 	aria-labelledby={tabElementId(session.id)}
 	hidden={!active}
-	class="absolute inset-0 overflow-hidden rounded-lg border bg-terminal-background p-2"
-></div>
+	class="absolute inset-0 overflow-hidden rounded-lg border bg-terminal-background"
+>
+	<div
+		bind:this={container}
+		class="h-full w-full p-2 transition-opacity duration-200"
+		class:invisible={overlayVisible}
+		class:opacity-0={overlayVisible}
+		class:opacity-100={!overlayVisible}
+	></div>
+
+	{#if overlayVisible}
+		<ConnectingOverlay
+			{session}
+			oncancel={() => {
+				if (session.status === 'error') {
+					onclose?.(session.id);
+				} else {
+					void disconnectSsh(session.id);
+				}
+			}}
+			onclose={() => onclose?.(session.id)}
+			onretry={() => onretry?.(session.id)}
+		/>
+	{/if}
+</div>

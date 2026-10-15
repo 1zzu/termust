@@ -22,6 +22,7 @@ import {
 } from '#lib/session-tabs';
 import type { Host } from '#lib/inventory';
 import type { AuthMethod } from '#lib/types';
+import { inventoryStore } from '#lib/stores/inventory-data.svelte';
 
 class TerminalStore {
 	sessions = $state<TerminalSession[]>([]);
@@ -123,6 +124,19 @@ class TerminalStore {
 	async closeTab(sessionId: string) {
 		await this.getLifecycle().close(sessionId);
 		if (!findSession(this.sessions, sessionId)) delete this.runtimes[sessionId];
+	}
+
+	async reconnectSession(sessionId: string) {
+		const session = findSession(this.sessions, sessionId);
+		if (!session) return;
+		const savedHostId = session.savedHostId;
+		await this.closeTab(sessionId);
+		if (savedHostId) {
+			const host = inventoryStore.hosts.find((h) => h.id === savedHostId);
+			if (host) {
+				this.connectSavedHost(host);
+			}
+		}
 	}
 
 	async disconnectActive() {

@@ -34,17 +34,27 @@
 
 	/* Layout dimensions */
 	--titlebar-height: 2.75rem;
-	--sidebar-width: 12rem;
+	--sidebar-width: 13.5rem;
 	--sidebar-collapsed-width: 3.5rem;
 	--context-panel-width: 20rem;
 	--terminal-tools-width: 18rem;
 
 	/* Status indicators */
 	--status-connected: oklch(0.696 0.17 162.48);
-	--status-connecting: oklch(0.769 0.188 70.08);
+	--status-connecting: oklch(76.9% 0.17337 64.355 / 0);
 	--status-disconnecting: oklch(0.769 0.188 70.08);
 	--status-error: oklch(0.645 0.246 16.439);
 	--status-idle: oklch(0.556 0 0);
+
+	/* Sidebar tokens (Light) */
+	--sidebar: oklch(0.985 0 0);
+	--sidebar-foreground: oklch(0.45 0 0);
+	--sidebar-primary: oklch(0.205 0 0);
+	--sidebar-primary-foreground: oklch(0.985 0 0);
+	--sidebar-accent: oklch(0.92 0 0);
+	--sidebar-accent-foreground: oklch(0.145 0 0);
+	--sidebar-border: oklch(0.922 0 0);
+	--sidebar-ring: oklch(0.708 0 0);
 }
 
 .dark {
@@ -76,6 +86,16 @@
 	--status-disconnecting: oklch(0.795 0.184 70.08);
 	--status-error: oklch(0.68 0.23 16.439);
 	--status-idle: oklch(0.708 0 0);
+
+	/* Sidebar tokens (Dark - slightly elevated surface) */
+	--sidebar: oklch(0.19 0 0);
+	--sidebar-foreground: oklch(0.708 0 0);
+	--sidebar-primary: oklch(0.985 0 0);
+	--sidebar-primary-foreground: oklch(0.205 0 0);
+	--sidebar-accent: oklch(0.269 0 0);
+	--sidebar-accent-foreground: oklch(0.985 0 0);
+	--sidebar-border: oklch(1 0 0 / 10%);
+	--sidebar-ring: oklch(0.556 0 0);
 }
 
 @theme inline {
@@ -106,6 +126,15 @@
 	--color-terminal-background: var(--terminal-background);
 	--color-terminal-foreground: var(--terminal-foreground);
 
+	--color-sidebar: var(--sidebar);
+	--color-sidebar-foreground: var(--sidebar-foreground);
+	--color-sidebar-primary: var(--sidebar-primary);
+	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+	--color-sidebar-accent: var(--sidebar-accent);
+	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-ring: var(--sidebar-ring);
+
 	--color-status-connected: var(--status-connected);
 	--color-status-connecting: var(--status-connecting);
 	--color-status-disconnecting: var(--status-disconnecting);
@@ -130,4 +159,34 @@
 	body {
 		@apply bg-background text-foreground;
 	}
+}
+
+/* Custom Scrollbar Utilities */
+.scrollbar-thin {
+	scrollbar-width: thin;
+	scrollbar-color: var(--border) transparent;
+}
+.scrollbar-thin::-webkit-scrollbar {
+	height: 3px;
+	width: 3px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+	background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+	background: var(--border);
+	border-radius: 9999px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+	background: var(--muted-foreground);
+}
+
+.scrollbar-none {
+	scrollbar-width: none;
+	-ms-overflow-style: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+	display: none;
+	width: 0;
+	height: 0;
 }

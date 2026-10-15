@@ -28,12 +28,12 @@
 	} = $props();
 </script>
 
-<div class="flex flex-col gap-4 lg:min-h-0 lg:flex-1 lg:flex-row lg:items-stretch">
-	<div class="flex min-w-0 flex-col gap-4 lg:min-h-0 lg:flex-1">
+<div class="flex h-full flex-col lg:min-h-0 lg:flex-1 lg:flex-row lg:items-stretch">
+	<div class="flex min-w-0 flex-col gap-4 p-4 sm:p-5 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
 		{#if header}
 			<div class="shrink-0">{@render header()}</div>
 		{/if}
-		<div class="lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+		<div class="lg:min-h-0 lg:flex-1">
 			{@render children?.()}
 		</div>
 	</div>

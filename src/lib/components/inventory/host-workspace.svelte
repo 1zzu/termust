@@ -24,8 +24,7 @@
 	} from './context-state';
 	import type { InventoryPageProps } from './page-props';
 	import HostGrid from './host-grid.svelte';
-	import HostDetailPanel from './host-detail-panel.svelte';
-	import HostFormPanel from './host-form-panel.svelte';
+	import HostSectionPanel from './host-section-panel.svelte';
 	import ListDetail from './list-detail.svelte';
 	import QuickConnectPanel from './quick-connect-panel.svelte';
 	import ImportOpensshDialog from '#lib/components/import-openssh-dialog.svelte';
@@ -41,6 +40,12 @@
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import ZapIcon from '@lucide/svelte/icons/zap';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
+	import TerminalIcon from '@lucide/svelte/icons/terminal';
+	import RadioIcon from '@lucide/svelte/icons/radio';
+	import LayoutGridIcon from '@lucide/svelte/icons/layout-grid';
+	import FolderIcon from '@lucide/svelte/icons/folder';
+	import { goto } from '$app/navigation';
 
 	/**
 	 * Hosts page: the saved hosts, their search and group filter, and the right
@@ -174,8 +179,17 @@
 		if (contextState?.kind === 'quick-connect') {
 			onquickclear?.();
 		}
-		// Selecting a host closes the form: the right column shows one thing.
-		closeHostForm();
+		contextState = selectHostContext(host.id);
+		if (formOpen) {
+			openEditHost(host);
+		}
+	}
+
+	function handleEditHost(host: Host) {
+		if (contextState?.kind === 'quick-connect') {
+			onquickclear?.();
+		}
+		openEditHost(host);
 		contextState = selectHostContext(host.id);
 	}
 
@@ -189,7 +203,7 @@
 	}
 
 	function handleCloseDetail() {
-		contextState = closeContext();
+		closeHostForm();
 	}
 
 	function handleCloseQuickConnect() {
@@ -198,23 +212,32 @@
 	}
 
 	function handleDelete(host: Host) {
-		contextState = closeContext();
+		closeHostForm();
 		void removeHost(host);
+	}
+
+	async function handleDeleteSelected() {
+		const target = selectedHost ?? hosts.find((h) => h.id === editingHost);
+		if (!target) return;
+		closeHostForm();
+		await removeHost(target);
 	}
 
 	// --- the host form ----------------------------------------------------
 
 	function closeHostForm() {
-		if (!formOpen) return;
+		if (!formOpen && contextState === null) return;
 		formOpen = false;
 		editingHost = null;
 		hostForm = emptyHostForm();
+		contextState = closeContext();
 	}
 
 	function openCreateHost() {
 		editingHost = null;
 		hostForm = emptyHostForm();
 		formOpen = true;
+		contextState = null;
 	}
 
 	function openEditHost(host: Host) {
@@ -230,8 +253,8 @@
 		formOpen = true;
 	}
 
-	async function submitHost(event: SubmitEvent) {
-		event.preventDefault();
+	async function submitHost(event?: SubmitEvent) {
+		event?.preventDefault();
 		const problem = hostFormProblem(hostForm);
 		if (problem) {
 			onerror(problem);
@@ -250,6 +273,71 @@
 		});
 	}
 
+	async function handleConnectFromPanel() {
+		const problem = hostFormProblem(hostForm);
+		if (problem) {
+			onerror(problem);
+			return;
+		}
+
+		const input = hostInput(hostForm);
+		const editing = editingHost;
+
+		await onmutate(async () => {
+			let targetHost: Host;
+			if (editing === null) {
+				targetHost = await createHost(input);
+			} else {
+				targetHost = await updateHost(editing, input);
+			}
+			onconnect(targetHost);
+		});
+	}
+
+	function handleSearchConnect() {
+		const target = searchQuery.trim();
+		if (!target) return;
+
+		// 1. Check if exact match to existing host label or address
+		const match = hosts.find(
+			(h) =>
+				h.label.toLowerCase() === target.toLowerCase() ||
+				h.address.toLowerCase() === target.toLowerCase()
+		);
+		if (match) {
+			onconnect(match);
+			return;
+		}
+
+		// 2. Parse target as SSH connection string (user@host:port or host:port or host)
+		let username = '';
+		let address = target;
+		let port = 22;
+
+		if (address.includes('@')) {
+			const atIndex = address.indexOf('@');
+			username = address.slice(0, atIndex);
+			address = address.slice(atIndex + 1);
+		}
+
+		if (address.includes(':')) {
+			const colonIndex = address.lastIndexOf(':');
+			const portStr = address.slice(colonIndex + 1);
+			const parsed = parseInt(portStr, 10);
+			if (!isNaN(parsed) && parsed > 0 && parsed <= 65535) {
+				port = parsed;
+				address = address.slice(0, colonIndex);
+			}
+		}
+
+		quickHost = address;
+		quickPort = port;
+		if (username) quickUsername = username;
+
+		closeHostForm();
+		contextState = { kind: 'quick-connect' };
+	}
+
 	async function removeHost(host: Host) {
 		await onmutate(() => deleteHost(host.id));
 	}
@@ -257,120 +345,129 @@
 
 <ListDetail open={formOpen || contextState !== null}>
 	{#snippet header()}
-		<!-- Hosts Toolbar: seamless directly in workspace, no outer card box -->
-		<div class="flex flex-col gap-2.5">
-			<!-- Search: primary control full width on top -->
+		<!-- Hosts Toolbar: search on top, actions row below -->
+		<div class="flex flex-col gap-3">
+			<!-- Top Search Bar with embedded Connect button -->
 			<div class="relative w-full">
 				<SearchIcon
-					class="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
+					class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
 				/>
 				<Input
 					type="search"
-					placeholder="Search hosts…"
+					placeholder="Find a host or ssh user@hostname..."
 					bind:value={searchQuery}
-					class="h-8 pl-8 text-xs"
-					aria-label="Search hosts"
-					disabled={busy || vaultStatus !== 'unlocked'}
+					onkeydown={(e) => {
+						if (e.key === 'Enter') handleSearchConnect();
+					}}
+					class="h-9 w-full rounded-lg border-border/70 bg-card/60 pr-24 pl-9 text-xs shadow-xs focus-visible:ring-1 focus-visible:ring-primary/40"
+					aria-label="Find a host or ssh address"
+					disabled={busy}
 				/>
+				<Button
+					size="sm"
+					variant={searchQuery.trim() ? 'default' : 'secondary'}
+					class="absolute top-1/2 right-1 h-7 -translate-y-1/2 px-3 text-xs font-medium"
+					onclick={handleSearchConnect}
+					disabled={!searchQuery.trim() || busy}
+				>
+					Connect
+				</Button>
 			</div>
 
-			<!-- Actions row: Filter, Quick Connect, Import OpenSSH, New Host -->
-			<div class="flex flex-wrap items-center gap-2">
-				<!-- Host count badge -->
-				<!-- <span
-				class="rounded border border-border/70 bg-muted/50 px-2 py-0.5 font-mono text-[11px] text-muted-foreground"
-				title="Host count"
-			>
-				{#if searchQuery.trim() !== '' || selectedGroupId !== ALL_GROUPS_FILTER}
-					{filteredHosts.length} / {hosts.length}
-				{:else}
-					{hosts.length}
-				{/if}
-			</span> -->
+			<!-- Secondary Action Bar (Single line) -->
+			<div class="flex items-center justify-between gap-2">
+				<div class="flex items-center gap-2">
+					<Button
+						size="sm"
+						class="h-8 shrink-0 gap-1.5 text-xs font-medium"
+						onclick={openCreateHost}
+						disabled={busy || vaultStatus !== 'unlocked'}
+					>
+						<PlusIcon class="size-3.5" />
+						<span>New host</span>
+					</Button>
+				</div>
 
-				<!-- New Host -->
-				<Button
-					size="sm"
-					class="h-8 text-xs"
-					onclick={openCreateHost}
-					disabled={busy || vaultStatus !== 'unlocked'}
-				>
-					<PlusIcon data-icon="inline-start" />
-					New host
-				</Button>
+				<div class="flex shrink-0 items-center gap-1.5 sm:gap-2">
+					<ImportOpensshDialog {vaultStatus} onimported={onrefresh} />
+					<Select
+						type="single"
+						bind:value={selectedGroupId}
+						items={groupFilterOptions}
+						disabled={busy || vaultStatus !== 'unlocked'}
+					>
+						<SelectTrigger
+							id="group-filter"
+							class="h-8 w-36 border-border/70 bg-card/60 text-xs"
+							aria-label="Filter by group"
+						>
+							<div class="flex items-center gap-1.5 truncate">
+								<FolderIcon class="size-3.5 shrink-0 text-muted-foreground" />
+								<SelectValue placeholder="All groups" />
+							</div>
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value={ALL_GROUPS_FILTER}>All groups</SelectItem>
+							<SelectItem value={UNGROUPED_FILTER}>Ungrouped</SelectItem>
+							{#each groups as group (group.id)}
+								<SelectItem value={group.id}>{group.name}</SelectItem>
+							{/each}
+						</SelectContent>
+					</Select>
 
-				<!-- Quick Connect button -->
-				<Button
-					variant={contextState?.kind === 'quick-connect' ? 'default' : 'outline'}
-					size="sm"
-					class="h-8 text-xs"
-					onclick={handleToggleQuickConnect}
-				>
-					<ZapIcon data-icon="inline-start" />
-					Quick Connect
-				</Button>
-
-				<!-- Import OpenSSH -->
-				<ImportOpensshDialog {vaultStatus} onimported={onrefresh} />
-
-				<!-- Group filter -->
-				<Select
-					type="single"
-					bind:value={selectedGroupId}
-					items={groupFilterOptions}
-					disabled={busy || vaultStatus !== 'unlocked'}
-				>
-					<SelectTrigger id="group-filter" class="h-8 w-35 text-xs" aria-label="Filter by group">
-						<SelectValue placeholder="All groups" />
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value={ALL_GROUPS_FILTER}>All groups</SelectItem>
-						<SelectItem value={UNGROUPED_FILTER}>Ungrouped</SelectItem>
-						{#each groups as group (group.id)}
-							<SelectItem value={group.id}>{group.name}</SelectItem>
-						{/each}
-					</SelectContent>
-				</Select>
+					<!-- <Button
+						variant="ghost"
+						size="icon"
+						class="size-8 shrink-0 text-muted-foreground hover:text-foreground"
+						aria-label="Grid layout"
+						title="Grid layout active"
+					>
+						<LayoutGridIcon class="size-3.5" />
+					</Button> -->
+				</div>
 			</div>
 		</div>
 	{/snippet}
 
-	<HostGrid
-		hosts={filteredHosts}
-		totalHostCount={hosts.length}
-		{groups}
-		{credentials}
-		{selectedHostId}
-		{busy}
-		{vaultStatus}
-		{hostConnecting}
-		onselect={handleSelectHost}
-		{onconnect}
-		{onopenvault}
-	/>
+	<div class="flex flex-col gap-2">
+		<div class="flex items-center justify-between px-0.5">
+			<h3 class="text-sm font-semibold tracking-tight text-foreground">Hosts</h3>
+			{#if filteredHosts.length > 0}
+				<span class="text-[11px] text-muted-foreground">{filteredHosts.length} hosts</span>
+			{/if}
+		</div>
+
+		<HostGrid
+			hosts={filteredHosts}
+			totalHostCount={hosts.length}
+			{groups}
+			{credentials}
+			{selectedHostId}
+			{busy}
+			{vaultStatus}
+			{hostConnecting}
+			onselect={handleSelectHost}
+			onedit={handleEditHost}
+			{onconnect}
+			{onopenvault}
+		/>
+	</div>
 
 	{#snippet panel()}
 		{#if formOpen}
-			<HostFormPanel
+			<HostSectionPanel
 				mode={editingHost === null ? 'create' : 'edit'}
+				host={selectedHost}
 				bind:form={hostForm}
 				{groups}
 				{credentials}
 				{busy}
+				connecting={selectedHost ? hostConnecting(selectedHost.id) : false}
+				{vaultStatus}
 				onsubmit={submitHost}
+				onconnect={handleConnectFromPanel}
+				ondelete={handleDeleteSelected}
 				onclose={closeHostForm}
-			/>
-		{:else if contextState?.kind === 'host' && selectedHost}
-			<HostDetailPanel
-				host={selectedHost}
-				groupName={selectedHostGroup}
-				credential={selectedHostCredential}
-				{busy}
-				connecting={hostConnecting(selectedHost.id)}
-				{onconnect}
-				onedit={openEditHost}
-				ondelete={handleDelete}
-				onclose={handleCloseDetail}
 			/>
 		{:else if contextState?.kind === 'quick-connect'}
 			<QuickConnectPanel

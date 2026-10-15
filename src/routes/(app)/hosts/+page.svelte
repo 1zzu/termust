@@ -7,15 +7,18 @@
 	import { goto } from '$app/navigation';
 </script>
 
-<div class="flex h-full min-h-0 flex-col gap-4">
+<div class="flex h-[calc(100%+2rem)] min-h-0 flex-col -m-4">
 	{#if inventoryStore.errorText}
-		<Alert variant="destructive" class="shrink-0">
-			<AlertTitle>Inventory error</AlertTitle>
-			<AlertDescription>{inventoryStore.errorText}</AlertDescription>
-		</Alert>
+		<div class="p-4 pb-0 shrink-0">
+			<Alert variant="destructive">
+				<AlertTitle>Inventory error</AlertTitle>
+				<AlertDescription>{inventoryStore.errorText}</AlertDescription>
+			</Alert>
+		</div>
 	{/if}
 
-	<HostWorkspace
+	<div class="flex-1 min-h-0 h-full">
+		<HostWorkspace
 		hosts={inventoryStore.hosts}
 		groups={inventoryStore.groups}
 		credentials={inventoryStore.credentials}
@@ -45,4 +48,5 @@
 		bind:openQuickConnect={terminalStore.openQuickConnect}
 		onopenvault={() => vaultStore.openGate()}
 	/>
+	</div>
 </div>

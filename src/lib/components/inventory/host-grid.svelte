@@ -19,6 +19,7 @@
 		vaultStatus,
 		hostConnecting,
 		onselect,
+		onedit,
 		onconnect,
 		onopenvault
 	}: {
@@ -31,6 +32,7 @@
 		vaultStatus?: VaultStatus;
 		hostConnecting: (hostId: string) => boolean;
 		onselect: (host: Host) => void;
+		onedit?: (host: Host) => void;
 		onconnect: (host: Host) => void;
 		onopenvault?: () => void;
 	} = $props();
@@ -115,6 +117,7 @@
 					{busy}
 					connecting={hostConnecting(host.id)}
 					{onselect}
+					{onedit}
 					{onconnect}
 				/>
 			{/each}
