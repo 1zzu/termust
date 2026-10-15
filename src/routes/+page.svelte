@@ -41,7 +41,7 @@
 		type TerminalRuntime,
 		type TerminalSession
 	} from '#lib/session-tabs';
-	import type { Host } from '#lib/inventory';
+	import type { Host, InventoryCounts, InventorySection } from '#lib/inventory';
 	import type { AuthMethod } from '#lib/types';
 	import { lockVault, vaultStatus as getVaultStatus, type VaultStatus } from '#lib/vault';
 	import { isVaultGateVisible } from '#lib/components/vault/vault-gate-state';
@@ -50,6 +50,16 @@
 
 	/** Active workspace: inventory (hosts, credentials, vault) or terminal (SSH sessions). */
 	let activeWorkspace = $state<Workspace>('inventory');
+	/** Active section inside the inventory workspace. */
+	let inventorySection = $state<InventorySection>('hosts');
+	/** Inventory item counts for sidebar badges. */
+	let inventoryCounts = $state<InventoryCounts>({
+		hosts: 0,
+		credentials: 0,
+		groups: 0,
+		knownHosts: 0,
+		snippets: 0
+	});
 	/** Whether the left sidebar navigation rail is collapsed. */
 	let sidebarCollapsed = $state(false);
 
@@ -329,11 +339,15 @@
 	{#snippet sidebar()}
 		<AppSidebar
 			{activeWorkspace}
+			activeSection={inventorySection}
 			collapsed={sidebarCollapsed}
 			sessionCount={sessions.length}
 			{vaultStatus}
-			ontogglecollapse={() => (sidebarCollapsed = !sidebarCollapsed)}
-			onnavigate={(workspace: Workspace) => (activeWorkspace = workspace)}
+			{inventoryCounts}
+			onnavigate={(workspace: Workspace, section?: InventorySection) => {
+				activeWorkspace = workspace;
+				if (section) inventorySection = section;
+			}}
 			onlockvault={handleLockVault}
 			onopenvault={handleOpenVaultGate}
 		/>
@@ -353,9 +367,11 @@
 		<div class="relative min-h-0 flex-1 overflow-hidden">
 			<!-- Inventory Workspace (kept mounted in DOM) -->
 			<div class="h-full w-full overflow-y-auto p-4" class:hidden={activeWorkspace !== 'inventory'}>
-				<div class="flex flex-col gap-4">
+				<div class="flex h-full min-h-0 flex-col">
 					<InventoryPanel
 						{vaultStatus}
+						bind:section={inventorySection}
+						oncountschange={(counts) => (inventoryCounts = counts)}
 						sessionStatus={activeSession?.status ?? 'idle'}
 						sessionId={activeSession?.id}
 						sessionTarget={activeSession?.title ?? ''}
@@ -412,7 +428,10 @@
 									variant="outline"
 									size="sm"
 									class="h-7 text-xs"
-									onclick={() => (activeWorkspace = 'inventory')}
+									onclick={() => {
+										activeWorkspace = 'inventory';
+										inventorySection = 'hosts';
+									}}
 								>
 									Go to Hosts
 								</Button>

@@ -2,7 +2,7 @@
 	import type { CredentialSummary, Host } from '#lib/inventory';
 	import { addedAt, canConnectHost, hostConnectionHint } from '#lib/inventory';
 	import { Button } from '#lib/components/ui/button';
-	import XIcon from '@lucide/svelte/icons/x';
+	import SidePanel from './side-panel.svelte';
 
 	let {
 		host,
@@ -31,42 +31,9 @@
 	const credentialType = $derived(
 		credential ? (credential.kind === 'password' ? 'Password' : 'Private key') : ''
 	);
-
-	function handleKeydown(event: KeyboardEvent) {
-		if (event.key === 'Escape') {
-			event.preventDefault();
-			onclose();
-		}
-	}
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
-
-<aside
-	class="flex w-full shrink-0 flex-col gap-4 rounded-lg border border-border bg-card p-4 lg:w-context-panel"
-	aria-label="Host details"
->
-	<div class="flex items-start justify-between gap-2 border-b border-border/50 pb-3">
-		<div class="min-w-0">
-			<h4 class="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
-				Host Details
-			</h4>
-			<p class="truncate text-base font-semibold text-foreground" title={host.label}>
-				{host.label}
-			</p>
-		</div>
-		<Button
-			variant="ghost"
-			size="sm"
-			class="size-7 shrink-0 p-0 text-muted-foreground hover:text-foreground"
-			onclick={onclose}
-			aria-label="Close details"
-			title="Close details"
-		>
-			<XIcon class="size-4" />
-		</Button>
-	</div>
-
+<SidePanel label="Host details" kicker="Host Details" title={host.label} {onclose}>
 	{#if hint}
 		<div
 			class="rounded-md border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs text-amber-500"
@@ -94,11 +61,11 @@
 		</div>
 		<div class="grid grid-cols-3 gap-1">
 			<dt class="text-muted-foreground">Group</dt>
-			<dd class="col-span-2 break-words text-foreground">{groupName || 'None'}</dd>
+			<dd class="col-span-2 wrap-break-word text-foreground">{groupName || 'None'}</dd>
 		</div>
 		<div class="grid grid-cols-3 gap-1">
 			<dt class="text-muted-foreground">Credential</dt>
-			<dd class="col-span-2 break-words text-foreground">
+			<dd class="col-span-2 wrap-break-word text-foreground">
 				{credential ? credential.name : 'None'}
 			</dd>
 		</div>
@@ -118,7 +85,7 @@
 		</div>
 	</dl>
 
-	<div class="mt-auto flex flex-col gap-2 border-t border-border/50 pt-3">
+	{#snippet footer()}
 		<Button
 			class="w-full"
 			disabled={busy || connecting || !connectable}
@@ -147,5 +114,5 @@
 				Delete
 			</Button>
 		</div>
-	</div>
-</aside>
+	{/snippet}
+</SidePanel>

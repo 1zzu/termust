@@ -189,7 +189,7 @@
 
 {#if vaultStatus === 'unlocked'}
 	<Button variant="outline" size="sm" onclick={() => (open = true)} disabled={busy}>
-		Import OpenSSH config
+		Import OpenSSH
 	</Button>
 {/if}
 

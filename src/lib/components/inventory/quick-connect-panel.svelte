@@ -11,7 +11,7 @@
 		SelectValue
 	} from '#lib/components/ui/select';
 	import { Textarea } from '#lib/components/ui/textarea';
-	import XIcon from '@lucide/svelte/icons/x';
+	import SidePanel from './side-panel.svelte';
 
 	let {
 		host = $bindable('localhost'),
@@ -41,40 +41,9 @@
 		{ value: 'password', label: 'Password' },
 		{ value: 'privateKey', label: 'Private key' }
 	];
-
-	function handleKeydown(event: KeyboardEvent) {
-		if (event.key === 'Escape') {
-			event.preventDefault();
-			onclose();
-		}
-	}
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
-
-<aside
-	class="flex w-full shrink-0 flex-col gap-4 overflow-y-auto rounded-lg border border-border bg-card p-4 lg:w-context-panel"
-	aria-label="Quick Connect"
->
-	<div class="flex items-start justify-between gap-2 border-b border-border/50 pb-3">
-		<div class="min-w-0">
-			<h4 class="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
-				Quick Connect
-			</h4>
-			<p class="truncate text-base font-semibold text-foreground">Direct Session</p>
-		</div>
-		<Button
-			variant="ghost"
-			size="sm"
-			class="size-7 shrink-0 p-0 text-muted-foreground hover:text-foreground"
-			onclick={onclose}
-			aria-label="Close Quick Connect"
-			title="Close Quick Connect"
-		>
-			<XIcon class="size-4" />
-		</Button>
-	</div>
-
+<SidePanel label="Quick Connect" kicker="Quick Connect" title="Direct Session" {onclose}>
 	<p class="text-xs text-muted-foreground">
 		Connects directly from this device with temporary credentials. Secrets are cleared after
 		connection.
@@ -179,4 +148,4 @@
 			</Button>
 		</div>
 	</form>
-</aside>
+</SidePanel>

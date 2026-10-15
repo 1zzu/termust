@@ -29,7 +29,7 @@ Komponen presentasi bagian Hosts dipecah menjadi unit-unit terfokus di bawah `sr
    - Tidak memuat atau menampilkan credential secret.
 
 4. `src/lib/components/inventory/host-detail-panel.svelte`:
-   - Ditampilkan hanya saat ada host yang dipilih.
+   - Ditampilkan hanya saat ada host yang dipilih; memakai frame `side-panel.svelte`.
    - Menampilkan field riil: label, address, port, username, group, nama credential, tipe credential, serta timestamp createdAt dan updatedAt.
    - Menyediakan aksi Connect, Edit, Delete, dan Close detail panel.
    - Menggunakan token lebar desktop `w-context-panel` (320px).
@@ -119,10 +119,13 @@ host-workspace.svelte (Local UI State: search, filter, selection)
 - [ ] Navigasi keyboard (Tab, Space, Enter) dapat memilih host card dan menekan tombol Connect.
 - [ ] Tombol Connect pada card dan detail panel aktif jika host memiliki credential, dan disabled jika belum memiliki credential ("Credential required").
 - [ ] Tombol Connect membuka sesi terminal baru ke host yang dituju.
-- [ ] Tombol Edit pada detail panel membuka dialog edit host dengan data yang tepat.
+- [ ] Tombol Edit pada detail panel membuka form edit host di kolom kanan dengan data yang tepat.
 - [ ] Tombol Delete pada detail panel menghapus host dan membersihkan seleksi.
-- [ ] Tombol Close atau tombol Escape menutup panel detail.
-- [ ] Tombol New Host membuka dialog pembuatan host baru.
+- [ ] Tombol Close atau tombol Escape menutup panel detail; saat ada dialog terbuka, Escape hanya menutup dialog.
+- [ ] Tombol New Host membuka form pembuatan host baru di kolom kanan.
+- [ ] Kolom kanan sejajar dengan kolom pencarian di atas dan mencapai dasar workspace di bawah.
+- [ ] Menutup panel mengembalikan lebar list ke penuh tanpa menyisakan ruang kosong.
+- [ ] Pada jendela sempit, panel turun ke bawah list dan halaman tetap bisa di-scroll sampai ujung.
 - [ ] Tombol Import OpenSSH membuka dialog import wizard dan memicu refresh setelah import berhasil.
 - [ ] Mengunci vault membersihkan daftar host dan menutup panel detail seketika.
 - [ ] Window resizing tidak menimbulkan scrollbar horizontal pada outer page.
@@ -243,3 +246,54 @@ Phase ini menutup revisi UX Phase 1G-2:
 - **Phase 1G-3 (Terminal Workspace)**: Snippet runner tools panel di sebelah kanan terminal workspace, status bar koneksi terminal.
 - **Phase 1G-4 (Forms dan Dialogs)**: Redesign modal dialog Host Create/Edit dan Credential Create/Edit.
 - **Phase 1G-5 (Responsive dan Mobile)**: Drawer sheet navigasi mobile penuh.
+
+---
+
+## 10. Phase 1G-2R3: Kolom Kanan Setinggi Workspace
+
+Revisi ini memperbaiki bentuk kolom kanan pada section Hosts. Sebelumnya panel kanan berada di dalam baris yang sama dengan grid host, sehingga baru mulai di bawah toolbar dan tingginya hanya sepanjang isinya. Sekarang panel kanan adalah kolom penuh, sejajar dengan kolom pencarian dan mencapai dasar workspace.
+
+### A. Tiga Komponen Baru yang Reusable
+
+1. `src/lib/components/inventory/list-detail.svelte`:
+   - Layout split: kolom tengah (toolbar + list) dan kolom kanan opsional.
+   - Toolbar (`header`) dimiliki kolom tengah dan tidak ikut scroll; list di bawahnya yang scroll sendiri pada `lg`.
+   - Kolom kanan hanya mengambil ruang saat `open` bernilai true dan snippet `panel` diberikan; tanpa keduanya, layout kembali menjadi satu kolom penuh.
+   - Di bawah breakpoint `lg`, kedua kolom bertumpuk dan halaman scroll sebagai satu kesatuan.
+
+2. `src/lib/components/inventory/side-panel.svelte`:
+   - Frame kolom kanan: kicker, judul record, tombol close, body yang scroll sendiri, dan area footer untuk kontrol aksi.
+   - Memiliki landmark `aside` dengan `aria-label`, lebar default token `w-context-panel` (320px) dan varian `wide` untuk form yang butuh ruang select lebih besar.
+   - Menangani tombol Escape di satu tempat; jika ada dialog yang terbuka (`[data-slot="dialog-content"]`), Escape diteruskan ke dialog tersebut dan panel tidak ikut tertutup.
+   - Tidak memiliki state. Kontennya di-unmount saat pemanggil berhenti merendernya — inilah yang membuang nilai rahasia yang setengah diketik ketika form ditutup.
+
+3. `src/lib/components/inventory/host-form-panel.svelte`:
+   - Form create/edit host yang sebelumnya berupa dialog, kini dirender sebagai panel kanan.
+   - Hanya mengedit nilai form yang diberikan (`$bindable`); validasi dan penyimpanan tetap milik `host-workspace.svelte`.
+   - Tombol submit memakai atribut `form="host-form"` sehingga berada di footer panel namun tetap mengirim form di body.
+
+`host-detail-panel.svelte` dan `quick-connect-panel.svelte` direfaktor memakai `side-panel.svelte`; keduanya tidak lagi memiliki window listener Escape atau header sendiri.
+
+### B. Kolom Kanan pada Section Hosts
+
+- Kolom kanan menampilkan tepat satu dari tiga hal, berurutan: form host (`formOpen`), detail host terpilih, atau Quick Connect.
+- Membuka form menutup konteks host/Quick Connect, dan sebaliknya memilih host atau menekan Quick Connect menutup form.
+- Header panel sejajar dengan kolom pencarian: toolbar berada di kolom tengah, bukan membentang di atas kedua kolom.
+- Panel kanan tidak berubah lebar mengikuti isi; lebarnya tetap `w-context-panel` selama terbuka.
+
+### C. Rantai Tinggi (Height Chain)
+
+- `src/routes/+page.svelte`: kontainer inventory menjadi `flex h-full min-h-0 flex-col` agar anaknya bisa mengisi tinggi penuh.
+- `inventory-panel.svelte`: pembungkus menjadi `flex min-h-0 flex-1 flex-col gap-4`, dan alert error diberi `shrink-0` supaya tidak ikut menggeser tinggi.
+- Pada `lg`: toolbar tetap di atas, list dan body panel masing-masing scroll sendiri, dan tidak ada scrollbar pada level halaman inventory.
+- Di bawah `lg`: halaman inventory yang scroll, sehingga panel yang panjang tidak terpotong.
+
+### D. Catatan Keamanan
+
+- Form host tetap hanya memuat nilai non-secret (label, address, port, username, groupId, credentialId).
+- Menutup panel form atau terkuncinya vault meng-unmount panel sehingga nilai form setengah terisi tidak tertinggal di DOM.
+
+### E. Sisa Pekerjaan Responsif
+
+- Pada lebar sempit, panel kanan turun ke bawah list sebagai blok penuh lebar. Perilaku overlay/drawer untuk viewport sempit tetap menjadi bagian Phase 1G-5.
+- Redesign dialog Credential dan halaman lain ke pola panel yang sama menyusul setelah halaman Hosts ini terbukti.

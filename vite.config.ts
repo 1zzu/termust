@@ -4,6 +4,13 @@ import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+	server: {
+		// Keep this in sync with `build.devUrl` in `src-tauri/tauri.conf.json`.
+		// `strictPort` prevents Vite from silently moving to another port, which
+		// would leave Tauri waiting forever for a frontend that never appears.
+		port: 1420,
+		strictPort: true
+	},
 	plugins: [
 		tailwindcss(),
 		sveltekit({

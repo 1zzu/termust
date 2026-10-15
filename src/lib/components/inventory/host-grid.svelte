@@ -101,18 +101,23 @@
 		</p>
 	</div>
 {:else}
-	<ul class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3" role="list">
-		{#each hosts as host (host.id)}
-			<HostCard
-				{host}
-				groupName={getGroupName(host.groupId)}
-				credentialName={getCredentialName(host.credentialId)}
-				selected={host.id === selectedHostId}
-				{busy}
-				connecting={hostConnecting(host.id)}
-				{onselect}
-				{onconnect}
-			/>
-		{/each}
-	</ul>
+	<div class="@container">
+		<ul
+			class="grid grid-cols-1 gap-3 @lg:grid-cols-2 @3xl:grid-cols-3 @5xl:grid-cols-4"
+			role="list"
+		>
+			{#each hosts as host (host.id)}
+				<HostCard
+					{host}
+					groupName={getGroupName(host.groupId)}
+					credentialName={getCredentialName(host.credentialId)}
+					selected={host.id === selectedHostId}
+					{busy}
+					connecting={hostConnecting(host.id)}
+					{onselect}
+					{onconnect}
+				/>
+			{/each}
+		</ul>
+	</div>
 {/if}

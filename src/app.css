@@ -34,7 +34,7 @@
 
 	/* Layout dimensions */
 	--titlebar-height: 2.75rem;
-	--sidebar-width: 15rem;
+	--sidebar-width: 12rem;
 	--sidebar-collapsed-width: 3.5rem;
 	--context-panel-width: 20rem;
 	--terminal-tools-width: 18rem;

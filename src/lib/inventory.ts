@@ -59,6 +59,17 @@ export interface Inventory {
 	snippets: Snippet[];
 }
 
+export type InventorySection =
+	'hosts' | 'credentials' | 'groups' | 'known_hosts' | 'snippets' | 'backup';
+
+export interface InventoryCounts {
+	hosts: number;
+	credentials: number;
+	groups: number;
+	knownHosts: number;
+	snippets: number;
+}
+
 /**
  * Freshly emptied lists. The panel assigns these when the vault locks, so no
  * decrypted record is left in the component's state; a new object each time
