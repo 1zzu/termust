@@ -36,7 +36,8 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            xdg-utils
 
       - uses: actions/setup-node@v4
         with:
@@ -76,8 +77,14 @@ jobs:
           __TAURI_WORKSPACE__: "true"
         run: cargo test
 
-      - name: Compile the Tauri application
-        run: npm run tauri -- build --no-bundle
+      - name: Build and bundle the Tauri application
+        run: npm run tauri -- build
+
+      - name: Upload installer bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: termust-${{ matrix.os }}
+          path: src-tauri/target/release/bundle/
 
   # The live SSH tests need Docker and a real server, so they only run on Linux
   # and only after the checks above. The Docker daemon on the runner is enough;
