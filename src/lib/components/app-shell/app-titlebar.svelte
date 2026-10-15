@@ -1,6 +1,5 @@
 <script lang="ts">
-	import ServerIcon from '@lucide/svelte/icons/server';
-
+	import * as Sidebar from '#lib/components/ui/sidebar';
 	import SessionTabStrip from '#lib/components/session-tab-strip.svelte';
 	import { getVisualActiveSessionId } from '#lib/components/vault/vault-gate-state';
 	import { Button } from '#lib/components/ui/button';
@@ -10,14 +9,15 @@
 	/**
 	 * Desktop app title bar.
 	 *
-	 * Combines macOS traffic-light safe margin, workspace navigation,
-	 * integrated session tabs, draggable empty regions, and active status display.
+	 * Combines sidebar trigger, integrated session tabs, draggable empty regions,
+	 * and active status display.
 	 */
 	let {
 		activeWorkspace = 'inventory',
 		sessions = [],
 		activeSessionId = null,
 		canDisconnect = false,
+		showTrafficLightMargin = false,
 		onnavigateinventory,
 		onselectsession,
 		onclosesession,
@@ -27,7 +27,8 @@
 		sessions: TerminalSession[];
 		activeSessionId?: string | null;
 		canDisconnect?: boolean;
-		onnavigateinventory: () => void;
+		showTrafficLightMargin?: boolean;
+		onnavigateinventory?: () => void;
 		onselectsession: (sessionId: string) => void;
 		onclosesession: (sessionId: string) => void;
 		ondisconnect?: () => void;
@@ -53,26 +54,14 @@
 <header
 	class="flex h-titlebar w-full shrink-0 items-center border-b border-border bg-background px-2 select-none"
 >
-	<!-- Safe area for macOS traffic lights (80px), non-interactive and draggable -->
-	<div class="h-full w-20 shrink-0" data-tauri-drag-region aria-hidden="true"></div>
-
-	<!-- Workspace navigation button (interactive, non-drag) -->
-	<div class="flex shrink-0 items-center gap-1">
-		<Button
-			variant={activeWorkspace === 'inventory' ? 'secondary' : 'ghost'}
-			size="sm"
-			class="h-7 gap-1.5 px-2.5 text-xs font-medium"
-			aria-current={activeWorkspace === 'inventory' ? 'page' : undefined}
-			onclick={onnavigateinventory}
-			title="Open Hosts Inventory"
-		>
-			<ServerIcon class="size-3.5" aria-hidden="true" />
-			<span>Hosts</span>
-		</Button>
-	</div>
-
-	<!-- Divider between workspace nav and tabs -->
-	<div class="mx-1 h-4 w-px shrink-0 bg-border/60" aria-hidden="true"></div>
+	{#if showTrafficLightMargin}
+		<!-- Safe area for macOS traffic lights (80px), non-interactive and draggable -->
+		<div class="h-full w-20 shrink-0" data-tauri-drag-region aria-hidden="true"></div>
+	{:else}
+		<!-- Sidebar toggle trigger -->
+		<Sidebar.Trigger class="size-7 shrink-0" />
+		<div class="mx-1 h-4 w-px shrink-0 bg-border/60" aria-hidden="true"></div>
+	{/if}
 
 	<!-- Integrated session tabs (interactive, non-drag) -->
 	<div class="flex max-w-2xl min-w-0 shrink items-center overflow-hidden">

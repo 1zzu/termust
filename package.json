@@ -41,7 +41,7 @@
 	},
 	"dependencies": {
 		"@internationalized/date": "^3.12.4",
-		"@lucide/svelte": "^1.56.0",
+		"@lucide/svelte": "^1.57.0",
 		"@tailwindcss/vite": "^4.3.3",
 		"@tauri-apps/api": "^2.12.3",
 		"@tauri-apps/plugin-dialog": "^2.8.2",

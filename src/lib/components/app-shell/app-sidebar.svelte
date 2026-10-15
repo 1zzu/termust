@@ -10,188 +10,172 @@
 	import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
 	import TerminalIcon from '@lucide/svelte/icons/terminal';
 
+	import * as Sidebar from '#lib/components/ui/sidebar';
 	import { Button } from '#lib/components/ui/button';
-	import type { InventoryCounts, InventorySection } from '#lib/inventory';
-	import type { VaultStatus } from '#lib/vault';
+	import { page } from '$app/state';
+	import { vaultStore } from '#lib/stores/vault.svelte';
+	import { terminalStore } from '#lib/stores/terminal.svelte';
+	import { inventoryStore } from '#lib/stores/inventory-data.svelte';
 
-	/**
-	 * Desktop app sidebar navigation.
-	 *
-	 * Provides collapsible navigation between Terminal and Inventory sections
-	 * (Hosts, Credentials, Groups, Known hosts, Snippets, Backup),
-	 * along with vault status and interactive actions at the bottom.
-	 */
-	let {
-		activeWorkspace = 'inventory',
-		activeSection = 'hosts',
-		collapsed = false,
-		sessionCount = 0,
-		vaultStatus,
-		inventoryCounts = {
-			hosts: 0,
-			credentials: 0,
-			groups: 0,
-			knownHosts: 0,
-			snippets: 0
-		},
-		onnavigate,
-		onlockvault,
-		onopenvault
-	}: {
-		activeWorkspace?: 'inventory' | 'terminal';
-		activeSection?: InventorySection;
-		collapsed?: boolean;
-		sessionCount?: number;
-		vaultStatus?: VaultStatus;
-		inventoryCounts?: InventoryCounts;
-		onnavigate: (workspace: 'inventory' | 'terminal', section?: InventorySection) => void;
-		onlockvault?: () => void;
-		onopenvault?: () => void;
-	} = $props();
-
-	interface InventoryMenuItem {
-		id: InventorySection;
+	interface MenuItem {
+		href: string;
 		label: string;
 		icon: typeof ServerIcon;
 		count?: number;
 		requiresUnlock: boolean;
 	}
 
-	const inventoryMenuItems = $derived<InventoryMenuItem[]>([
+	const inventoryItems = $derived<MenuItem[]>([
 		{
-			id: 'hosts',
+			href: '/hosts',
 			label: 'Hosts',
 			icon: ServerIcon,
-			count: inventoryCounts.hosts,
+			count: inventoryStore.counts.hosts,
 			requiresUnlock: false
 		},
 		{
-			id: 'credentials',
+			href: '/credentials',
 			label: 'Credentials',
 			icon: KeyRoundIcon,
-			count: inventoryCounts.credentials,
+			count: inventoryStore.counts.credentials,
 			requiresUnlock: true
 		},
 		{
-			id: 'groups',
+			href: '/groups',
 			label: 'Groups',
 			icon: FolderIcon,
-			count: inventoryCounts.groups,
+			count: inventoryStore.counts.groups,
 			requiresUnlock: true
 		},
 		{
-			id: 'known_hosts',
+			href: '/known-hosts',
 			label: 'Known hosts',
 			icon: FingerprintIcon,
-			count: inventoryCounts.knownHosts,
+			count: inventoryStore.counts.knownHosts,
 			requiresUnlock: true
 		},
 		{
-			id: 'snippets',
+			href: '/snippets',
 			label: 'Snippets',
 			icon: CodeXmlIcon,
-			count: inventoryCounts.snippets,
+			count: inventoryStore.counts.snippets,
 			requiresUnlock: true
 		},
 		{
-			id: 'backup',
+			href: '/backup',
 			label: 'Backup & Restore',
 			icon: ArchiveRestoreIcon,
 			requiresUnlock: true
 		}
 	]);
+
+	function isItemActive(href: string, currentPath: string): boolean {
+		if (href === '/hosts') {
+			return currentPath === '/hosts' || currentPath === '/';
+		}
+		return currentPath === href || currentPath.startsWith(href + '/');
+	}
 </script>
 
-<aside
-	class="flex shrink-0 flex-col border-r border-border bg-background transition-all duration-200 motion-reduce:transition-none"
-	class:w-sidebar={!collapsed}
-	class:w-sidebar-collapsed={collapsed}
->
-	<!-- Main navigation -->
-	<nav aria-label="Main Navigation" class="flex flex-1 flex-col gap-1 overflow-y-auto p-2">
-		<button
-			type="button"
-			class="flex items-center gap-2.5 rounded-md px-2.5 py-2 text-xs font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:outline-none"
-			class:bg-accent={activeWorkspace === 'terminal'}
-			class:text-accent-foreground={activeWorkspace === 'terminal'}
-			class:text-muted-foreground={activeWorkspace !== 'terminal'}
-			class:justify-center={collapsed}
-			aria-current={activeWorkspace === 'terminal' ? 'page' : undefined}
-			onclick={() => onnavigate('terminal')}
-			title="Terminal workspace"
-		>
-			<TerminalIcon class="size-4 shrink-0" aria-hidden="true" />
-			<span class={collapsed ? 'sr-only' : 'truncate'}>Terminal</span>
-			{#if sessionCount > 0}
-				{#if collapsed}
-					<span class="sr-only">({sessionCount} active sessions)</span>
-				{:else}
-					<span
-						class="ml-auto rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+<Sidebar.Root collapsible="icon">
+	<!-- Safe area for macOS traffic lights: completely empty, no content, draggable -->
+	<Sidebar.Header
+		class="h-titlebar border-b border-border/50 p-0 select-none"
+		data-tauri-drag-region
+	>
+		<div class="h-full w-full" data-tauri-drag-region aria-hidden="true"></div>
+	</Sidebar.Header>
+
+	<Sidebar.Content>
+		<!-- Terminal Workspace Item -->
+		<Sidebar.Group class="py-1">
+			<Sidebar.Menu>
+				{@const isTerminalActive = page.url.pathname === '/terminal'}
+				{@const sessionCount = terminalStore.sessions.length}
+				<Sidebar.MenuItem>
+					<Sidebar.MenuButton
+						isActive={isTerminalActive}
+						tooltipContent="Terminal workspace"
+						size="sm"
 					>
-						{sessionCount}
-					</span>
-				{/if}
-			{/if}
-		</button>
-
-		<div class="my-1 border-t border-border/50" aria-hidden="true"></div>
-
-		<!-- {#if !collapsed}
-			<div
-				class="px-2.5 py-1 text-[10px] font-semibold tracking-wider text-muted-foreground uppercase"
-			>
-				Inventory
-			</div>
-		{/if} -->
-
-		{#each inventoryMenuItems as item (item.id)}
-			{@const isLocked = item.requiresUnlock && vaultStatus !== 'unlocked'}
-			{@const isActive = activeWorkspace === 'inventory' && activeSection === item.id}
-			{@const ItemIcon = item.icon}
-			<button
-				type="button"
-				class="flex items-center gap-2.5 rounded-md px-2.5 py-2 text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:outline-none"
-				class:bg-accent={isActive}
-				class:text-accent-foreground={isActive}
-				class:text-muted-foreground={!isActive && !isLocked}
-				class:hover:bg-accent={!isLocked}
-				class:hover:text-accent-foreground={!isLocked}
-				class:opacity-50={isLocked}
-				class:cursor-not-allowed={isLocked}
-				class:justify-center={collapsed}
-				aria-current={isActive ? 'page' : undefined}
-				disabled={isLocked}
-				onclick={() => onnavigate('inventory', item.id)}
-				title={isLocked
-					? `${item.label} (Vault locked)`
-					: item.count !== undefined
-						? `${item.label} (${item.count})`
-						: item.label}
-			>
-				<ItemIcon class="size-4 shrink-0" aria-hidden="true" />
-				<span class={collapsed ? 'sr-only' : 'truncate'}>{item.label}</span>
-				{#if item.count !== undefined && !isLocked}
-					{#if collapsed}
-						<span class="sr-only">({item.count})</span>
-					{:else}
-						<span
-							class="ml-auto rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
-						>
-							{item.count}
-						</span>
+						{#snippet child({ props })}
+							<a href="/terminal" {...props} aria-current={isTerminalActive ? 'page' : undefined}>
+								<TerminalIcon class="size-4 shrink-0" aria-hidden="true" />
+								<span>Terminal</span>
+							</a>
+						{/snippet}
+					</Sidebar.MenuButton>
+					{#if sessionCount > 0}
+						<Sidebar.MenuBadge class="font-mono text-[10px]">
+							{sessionCount}
+						</Sidebar.MenuBadge>
 					{/if}
-				{/if}
-			</button>
-		{/each}
-	</nav>
+				</Sidebar.MenuItem>
+			</Sidebar.Menu>
+		</Sidebar.Group>
 
-	<!-- Interactive vault status and actions -->
-	{#if !collapsed}
-		<div
-			class="flex items-center justify-between border-t border-border/50 p-2 text-xs text-muted-foreground"
-		>
-			{#if vaultStatus === 'unlocked'}
+		<Sidebar.Separator />
+
+		<!-- Inventory Workspace Navigation Group -->
+		<Sidebar.Group class="py-1">
+			<Sidebar.GroupLabel class="text-[10px] font-semibold tracking-wider uppercase">
+				Inventory
+			</Sidebar.GroupLabel>
+			<Sidebar.GroupContent>
+				<Sidebar.Menu>
+					{#each inventoryItems as item (item.href)}
+						{@const isLocked = item.requiresUnlock && vaultStore.status !== 'unlocked'}
+						{@const isActive = isItemActive(item.href, page.url.pathname)}
+						{@const ItemIcon = item.icon}
+						<Sidebar.MenuItem>
+							{#if isLocked}
+								<Sidebar.MenuButton
+									isActive={false}
+									tooltipContent={`${item.label} (Vault locked)`}
+									size="sm"
+									class="cursor-not-allowed opacity-50"
+									aria-disabled={true}
+								>
+									<ItemIcon class="size-4 shrink-0" aria-hidden="true" />
+									<span>{item.label}</span>
+								</Sidebar.MenuButton>
+							{:else}
+								<Sidebar.MenuButton
+									{isActive}
+									tooltipContent={item.count !== undefined
+										? `${item.label} (${item.count})`
+										: item.label}
+									size="sm"
+								>
+									{#snippet child({ props })}
+										<a
+											href={item.href}
+											{...props}
+											aria-current={isActive ? 'page' : undefined}
+										>
+											<ItemIcon class="size-4 shrink-0" aria-hidden="true" />
+											<span>{item.label}</span>
+										</a>
+									{/snippet}
+								</Sidebar.MenuButton>
+								{#if item.count !== undefined}
+									<Sidebar.MenuBadge class="font-mono text-[10px]">
+										{item.count}
+									</Sidebar.MenuBadge>
+								{/if}
+							{/if}
+						</Sidebar.MenuItem>
+					{/each}
+				</Sidebar.Menu>
+			</Sidebar.GroupContent>
+		</Sidebar.Group>
+	</Sidebar.Content>
+
+	<!-- Vault Status and Actions Footer -->
+	<Sidebar.Footer class="border-t border-border/50 p-2">
+		<!-- Expanded layout view -->
+		<div class="flex items-center justify-between gap-1 group-data-[collapsible=icon]:hidden">
+			{#if vaultStore.status === 'unlocked'}
 				<div class="flex min-w-0 items-center gap-1.5" title="Vault unlocked">
 					<ShieldCheckIcon class="size-4 shrink-0 text-status-connected" aria-hidden="true" />
 					<span class="truncate text-[11px] font-medium text-foreground">Vault unlocked</span>
@@ -200,13 +184,13 @@
 					variant="ghost"
 					size="sm"
 					class="h-6 px-2 text-[11px] font-medium text-muted-foreground hover:text-foreground"
-					onclick={onlockvault}
+					onclick={() => void vaultStore.lock()}
 					title="Lock vault"
 					aria-label="Lock vault"
 				>
 					Lock
 				</Button>
-			{:else if vaultStatus === 'locked'}
+			{:else if vaultStore.status === 'locked'}
 				<div class="flex min-w-0 items-center gap-1.5" title="Vault locked">
 					<ShieldAlertIcon class="size-4 shrink-0 text-status-connecting" aria-hidden="true" />
 					<span class="truncate text-[11px] font-medium text-foreground">Vault locked</span>
@@ -215,13 +199,13 @@
 					variant="outline"
 					size="sm"
 					class="h-6 px-2 text-[11px] font-medium"
-					onclick={onopenvault}
+					onclick={() => vaultStore.openGate()}
 					title="Unlock vault"
 					aria-label="Unlock vault"
 				>
 					Unlock
 				</Button>
-			{:else if vaultStatus === 'uninitialized'}
+			{:else if vaultStore.status === 'uninitialized'}
 				<div class="flex min-w-0 items-center gap-1.5" title="No vault">
 					<ShieldAlertIcon class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
 					<span class="truncate text-[11px] font-medium text-foreground">No vault</span>
@@ -230,7 +214,7 @@
 					variant="outline"
 					size="sm"
 					class="h-6 px-2 text-[11px] font-medium"
-					onclick={onopenvault}
+					onclick={() => vaultStore.openGate()}
 					title="Create vault"
 					aria-label="Create vault"
 				>
@@ -242,7 +226,7 @@
 						class="size-4 shrink-0 animate-spin text-muted-foreground"
 						aria-hidden="true"
 					/>
-					<span class="truncate text-[11px]">Checking…</span>
+					<span class="truncate text-[11px] text-muted-foreground">Checking...</span>
 				</div>
 				<Button
 					variant="ghost"
@@ -256,38 +240,37 @@
 				</Button>
 			{/if}
 		</div>
-	{:else}
-		<div
-			class="flex items-center justify-center border-t border-border/50 p-2 text-xs text-muted-foreground"
-		>
-			{#if vaultStatus === 'unlocked'}
+
+		<!-- Collapsed icon layout view -->
+		<div class="hidden items-center justify-center group-data-[collapsible=icon]:flex">
+			{#if vaultStore.status === 'unlocked'}
 				<Button
 					variant="ghost"
 					size="icon-xs"
 					class="size-7 text-status-connected hover:text-foreground"
-					onclick={onlockvault}
+					onclick={() => void vaultStore.lock()}
 					aria-label="Lock vault"
 					title="Lock vault"
 				>
 					<ShieldCheckIcon class="size-4" aria-hidden="true" />
 				</Button>
-			{:else if vaultStatus === 'locked'}
+			{:else if vaultStore.status === 'locked'}
 				<Button
 					variant="ghost"
 					size="icon-xs"
 					class="size-7 text-status-connecting hover:text-foreground"
-					onclick={onopenvault}
+					onclick={() => vaultStore.openGate()}
 					aria-label="Unlock vault"
 					title="Unlock vault"
 				>
 					<ShieldAlertIcon class="size-4" aria-hidden="true" />
 				</Button>
-			{:else if vaultStatus === 'uninitialized'}
+			{:else if vaultStore.status === 'uninitialized'}
 				<Button
 					variant="ghost"
 					size="icon-xs"
 					class="size-7 text-muted-foreground hover:text-foreground"
-					onclick={onopenvault}
+					onclick={() => vaultStore.openGate()}
 					aria-label="Create vault"
 					title="Create vault"
 				>
@@ -306,5 +289,6 @@
 				</Button>
 			{/if}
 		</div>
-	{/if}
-</aside>
+	</Sidebar.Footer>
+	<Sidebar.Rail />
+</Sidebar.Root>
