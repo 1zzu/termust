@@ -74,7 +74,7 @@ jobs:
       - name: Rust tests
         working-directory: src-tauri
         env:
-          __TAURI_WORKSPACE__: "true"
+          __TAURI_WORKSPACE__: 'true'
         run: cargo test
 
       - name: Build and bundle the Tauri application
