@@ -89,63 +89,63 @@
 			</div>
 		{/if}
 
-			<div class="relative min-h-0 flex-1 overflow-hidden">
-				<!-- Persistent Terminal Workspace: kept mounted in DOM to preserve xterm instances & SSH connection -->
-				<div
-					class="relative h-full w-full flex-col overflow-hidden p-2"
-					style:display={isTerminalRoute ? 'flex' : 'none'}
-				>
-					{#if terminalStore.activeSession?.errorMessage && terminalStore.activeSession?.status !== 'error'}
-						<div class="mb-2 shrink-0">
-							<Alert variant="destructive">
-								<AlertTitle>Connection failed ({terminalStore.activeSession.title})</AlertTitle>
-								<AlertDescription>{terminalStore.activeSession.errorMessage}</AlertDescription>
-							</Alert>
+		<div class="relative min-h-0 flex-1 overflow-hidden">
+			<!-- Persistent Terminal Workspace: kept mounted in DOM to preserve xterm instances & SSH connection -->
+			<div
+				class="relative h-full w-full flex-col overflow-hidden p-2"
+				style:display={isTerminalRoute ? 'flex' : 'none'}
+			>
+				{#if terminalStore.activeSession?.errorMessage && terminalStore.activeSession?.status !== 'error'}
+					<div class="mb-2 shrink-0">
+						<Alert variant="destructive">
+							<AlertTitle>Connection failed ({terminalStore.activeSession.title})</AlertTitle>
+							<AlertDescription>{terminalStore.activeSession.errorMessage}</AlertDescription>
+						</Alert>
+					</div>
+				{/if}
+
+				<div class="relative min-h-0 flex-1">
+					{#if terminalStore.sessions.length === 0}
+						<div class="flex h-full items-center justify-center rounded-lg border border-dashed">
+							<div class="flex flex-col items-center gap-2 p-4 text-center">
+								<p class="text-xs text-muted-foreground">No active terminal sessions.</p>
+								<Button
+									variant="outline"
+									size="sm"
+									class="h-7 text-xs"
+									onclick={() => void goto('/hosts')}
+								>
+									Go to Hosts
+								</Button>
+							</div>
 						</div>
 					{/if}
-
-					<div class="relative min-h-0 flex-1">
-						{#if terminalStore.sessions.length === 0}
-							<div class="flex h-full items-center justify-center rounded-lg border border-dashed">
-								<div class="flex flex-col items-center gap-2 p-4 text-center">
-									<p class="text-xs text-muted-foreground">No active terminal sessions.</p>
-									<Button
-										variant="outline"
-										size="sm"
-										class="h-7 text-xs"
-										onclick={() => void goto('/hosts')}
-									>
-										Go to Hosts
-									</Button>
-								</div>
-							</div>
-						{/if}
-						{#each terminalStore.sessions as session (session.id)}
-							<TerminalSessionPane
-								{session}
-								active={isTerminalRoute && session.id === terminalStore.activeSessionId}
-								onready={(id, runtime) => terminalStore.handleReady(id, runtime)}
-								onclose={(id) => {
-									void terminalStore.closeTab(id);
-									if (terminalStore.sessions.length <= 1) {
-										void goto('/hosts');
-									}
-								}}
-								onretry={(id) => void terminalStore.reconnectSession(id)}
-							/>
-						{/each}
-					</div>
-				</div>
-
-				<!-- Routed Page Content: for inventory routes (/hosts, /credentials, etc.) -->
-				<div
-					class="h-full w-full overflow-y-auto p-4"
-					style:display={isTerminalRoute ? 'none' : 'block'}
-				>
-					{@render children()}
+					{#each terminalStore.sessions as session (session.id)}
+						<TerminalSessionPane
+							{session}
+							active={isTerminalRoute && session.id === terminalStore.activeSessionId}
+							onready={(id, runtime) => terminalStore.handleReady(id, runtime)}
+							onclose={(id) => {
+								void terminalStore.closeTab(id);
+								if (terminalStore.sessions.length <= 1) {
+									void goto('/hosts');
+								}
+							}}
+							onretry={(id) => void terminalStore.reconnectSession(id)}
+						/>
+					{/each}
 				</div>
 			</div>
-		</Sidebar.Inset>
+
+			<!-- Routed Page Content: for inventory routes (/hosts, /credentials, etc.) -->
+			<div
+				class="h-full w-full overflow-y-auto p-4"
+				style:display={isTerminalRoute ? 'none' : 'block'}
+			>
+				{@render children()}
+			</div>
+		</div>
+	</Sidebar.Inset>
 </Sidebar.Provider>
 
 <!-- Host key prompt dialog -->
@@ -191,9 +191,7 @@
 			<Button variant="outline" onclick={() => void terminalStore.answerHostKey(false)}>
 				Cancel
 			</Button>
-			<Button onclick={() => void terminalStore.answerHostKey(true)}>
-				Accept and connect
-			</Button>
+			<Button onclick={() => void terminalStore.answerHostKey(true)}>Accept and connect</Button>
 		</DialogFooter>
 	</DialogContent>
 </Dialog>

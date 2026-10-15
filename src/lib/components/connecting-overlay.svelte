@@ -242,7 +242,7 @@
 					<AlertCircleIcon class="mt-0.5 size-4.5 shrink-0 text-red-400" />
 					<div class="flex min-w-0 flex-1 flex-col gap-1">
 						<h4 class="text-xs font-semibold text-red-200">Authentication or Connection Failed</h4>
-						<p class="text-xs leading-relaxed break-words text-red-300/90">
+						<p class="text-xs leading-relaxed wrap-break-word text-red-300/90">
 							{errorMessageText}
 						</p>
 					</div>

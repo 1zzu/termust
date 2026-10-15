@@ -116,7 +116,7 @@
 			<Button
 				variant="ghost"
 				size="icon-xs"
-				class="size-7 rounded-md text-muted-foreground opacity-0 transition-opacity duration-150 hover:bg-muted/80 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+				class="size-7 rounded-md text-muted-foreground opacity-0 transition-opacity duration-150 group-hover:opacity-100 hover:bg-muted/80 hover:text-foreground focus-visible:opacity-100"
 				title="Edit host"
 				aria-label={`Edit ${host.label}`}
 				onclick={(e) => {

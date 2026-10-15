@@ -1,11 +1,5 @@
 import { listen } from '@tauri-apps/api/event';
-import {
-	connectSsh,
-	disconnectSsh,
-	errorMessage,
-	respondHostKey,
-	startSavedSsh
-} from '#lib/ssh';
+import { connectSsh, disconnectSsh, errorMessage, respondHostKey, startSavedSsh } from '#lib/ssh';
 import { createSessionLifecycle, type SessionLifecycle } from '#lib/session-lifecycle';
 import {
 	clearHostKeyPrompt,
@@ -62,7 +56,7 @@ class TerminalStore {
 				writeActive: (sessionId) => {
 					this.activeSessionId = sessionId;
 				},
-				listen: <P,>(event: string, handler: (payload: P) => void) =>
+				listen: <P>(event: string, handler: (payload: P) => void) =>
 					listen<P>(event, ({ payload }) => handler(payload)),
 				connect: (request) => connectSsh(request),
 				startSaved: (request) => startSavedSsh(request),

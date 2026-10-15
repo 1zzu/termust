@@ -144,10 +144,10 @@
 
 	const isConnectingPhase = $derived(
 		session.status === 'idle' ||
-		session.status === 'connecting' ||
-		session.status === 'verifying_host_key' ||
-		session.status === 'authenticating' ||
-		session.status === 'error'
+			session.status === 'connecting' ||
+			session.status === 'verifying_host_key' ||
+			session.status === 'authenticating' ||
+			session.status === 'error'
 	);
 
 	let transitionDone = $state(false);

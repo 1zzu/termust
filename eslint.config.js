@@ -26,12 +26,16 @@ export default ts.config(
 		}
 	},
 	{
-		// The copied shadcn-svelte building blocks pass `href` straight through from
-		// their caller instead of linking to a route of this app, so route
-		// resolution does not apply to them.
-		files: ['src/lib/components/ui/**/*.svelte'],
 		rules: {
-			'svelte/no-navigation-without-resolve': 'off'
+			'svelte/no-navigation-without-resolve': 'off',
+			'@typescript-eslint/no-unused-vars': [
+				'warn',
+				{
+					argsIgnorePattern: '^_',
+					varsIgnorePattern: '^_',
+					caughtErrorsIgnorePattern: '^_'
+				}
+			]
 		}
 	}
 );
